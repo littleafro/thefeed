@@ -65,7 +65,7 @@ func NewFetcher(domain, passphrase string, resolvers []string) (*Fetcher, error)
 		queryMode:       protocol.QuerySingleLabel,
 		allResolvers:    r,
 		activeResolvers: r,
-		timeout:         10 * time.Second,
+		timeout:         20 * time.Second,
 	}, nil
 }
 
@@ -446,7 +446,7 @@ func (f *Fetcher) exchangeResolver(ctx context.Context, resolver, qname string) 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
 	m.RecursionDesired = true
-	m.SetEdns0(1232, false)
+	m.SetEdns0(4096, false)
 
 	resp, _, err := c.ExchangeContext(resolverCtx, m, resolver)
 	if err != nil {
