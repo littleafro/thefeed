@@ -52,7 +52,7 @@ All communication is encrypted with AES-256 and transmitted via standard DNS TXT
 One-line install (downloads latest release from GitHub)
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh)
+sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh)"
 ```
 
 Or manually:
@@ -72,10 +72,10 @@ The script will:
 
 Update:
 ```bash
-sudo bash <(curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh)
+sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh)"
 ```
-Re-login: `sudo bash <(curl -Ls ...) --login`
-Uninstall: `sudo bash <(curl -Ls ...) --uninstall`
+Re-login: `curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh | sudo bash -s -- --login`
+Uninstall: `curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh | sudo bash -s -- --uninstall`
 
 ## Manual Setup
 
