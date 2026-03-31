@@ -178,6 +178,45 @@ chmod +x thefeed-client
 # Open in browser: http://127.0.0.1:8080
 ```
 
+#### Android (Native APK Wrapper)
+
+> download it from the latest release assets: `thefeed-android-arm64.apk`
+
+
+You can build or download a native Android app that:
+- runs thefeed client binary in a foreground/background service
+- opens the local web UI inside an in-app WebView
+
+Project path:
+- `android/`
+
+Build steps:
+
+```bash
+# 1) Build Android binary from project root
+make build-android-arm64
+
+# 2) Copy binary into Android app assets (required filename)
+cp build/thefeed-client-android-arm64 android/app/src/main/assets/thefeed-client
+
+# 3) Build debug APK
+cd android
+gradle wrapper --gradle-version 8.10.2
+./gradlew assembleDebug
+```
+
+APK output:
+
+```bash
+android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install on device:
+
+```bash
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
 ### Web UI
 
 The browser-based UI has:
@@ -201,6 +240,20 @@ make vet         # Go vet
 make fmt         # Format code
 make clean       # Remove build artifacts
 ```
+
+## Releases (GitHub Actions)
+
+Pushing a tag that starts with `v` triggers CI build + GitHub Release.
+
+- Stable release tag example: `v1.4.0`
+- Pre-release tag examples: `v1.4.0-rc1`, `v1.4.0-beta.2`
+
+Rule:
+- If tag contains `-`, release is marked as **pre-release** automatically.
+
+Release assets include:
+- Server/client binaries for all current target platforms
+- Native Android wrapper APK: `thefeed-android-arm64.apk`
 
 ## DNS Records Setup
 
