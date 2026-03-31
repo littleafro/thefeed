@@ -108,8 +108,8 @@ jobs:
         run: |
           test -f artifacts/thefeed-client-android-arm64
           mkdir -p android/app/src/main/assets
-          cp artifacts/thefeed-client-android-arm64 android/app/src/main/assets/thefeed-client
-          chmod +x android/app/src/main/assets/thefeed-client
+          cp artifacts/thefeed-client-android-arm64 android/app/src/main/assets/thefeed-client-arm64
+          chmod +x android/app/src/main/assets/thefeed-client-arm64
 
       - name: Decode signing keystore
         if: env.KEYSTORE_BASE64 != ''

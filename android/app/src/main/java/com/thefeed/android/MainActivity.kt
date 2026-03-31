@@ -1,6 +1,7 @@
 package com.thefeed.android
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -113,11 +114,28 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadLocalWebWithRetry() {
-        val url = "http://127.0.0.1:${ThefeedService.PORT}"
+        val port = getCurrentPort()
+        if (port <= 0) {
+            if (retryCount < MAX_RETRIES) {
+                retryCount++
+                txtStatus.text = "Waiting for service port... (attempt $retryCount)"
+                handler.postDelayed({ loadLocalWebWithRetry() }, RETRY_DELAY_MS)
+            } else {
+                txtStatus.text = "Service port unavailable. Tap Reload."
+            }
+            return
+        }
+
+        val url = "http://127.0.0.1:$port"
         txtStatus.text = "Loading $url ..."
         // Give the Go binary time to bind the port on first launch
         val delay = if (retryCount == 0) INITIAL_DELAY_MS else 0L
         handler.postDelayed({ webView.loadUrl(url) }, delay)
+    }
+
+    private fun getCurrentPort(): Int {
+        val prefs = getSharedPreferences(ThefeedService.PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getInt(ThefeedService.PREF_PORT, -1)
     }
 
     override fun onDestroy() {
