@@ -507,7 +507,13 @@ uninstall_thefeed() {
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload
 
-    read -rp "Remove all data (config, session, binary)? [y/N]: " remove_data
+    local remove_data=""
+    if [[ -t 0 ]]; then
+        read -rp "Remove all data (config, session, binary)? [y/N]: " remove_data
+    else
+        # When piped (curl | bash), stdin is not a terminal — default to keeping data
+        echo -e "${yellow}Non-interactive mode: keeping data. Delete manually with: rm -rf ${INSTALL_DIR}${plain}"
+    fi
     if [[ "$remove_data" == "y" || "$remove_data" == "Y" ]]; then
         rm -rf "$INSTALL_DIR"
         echo -e "${green}All data removed${plain}"
