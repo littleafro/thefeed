@@ -222,7 +222,7 @@ html[dir=ltr] .active-badge{margin-left:0;margin-right:6px}
       <input class="sidebar-search" id="channelSearch" type="text" data-i18n-ph="search" placeholder="Search..." oninput="filterChannels()">
     </div>
     <div class="channel-list" id="channelList">
-      <div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px" data-i18n="no_channels">No channels</div>
+      <div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px" data-i18n="no_channels">No channels yet</div>
     </div>
     <div class="sidebar-footer">
       TELEGRAM: <a href="https://t.me/networkti" target="_blank">@networkti</a>
@@ -359,8 +359,9 @@ html[dir=ltr] .active-badge{margin-left:0;margin-right:6px}
 var I18N = {
   fa: {
     search:'جستجو...',settings:'تنظیمات',profiles:'پروفایل‌ها',
-    no_channels:'کانالی وجود ندارد',loading:'در حال بارگذاری...',no_messages:'هنوز پیامی در این کانال وجود ندارد',
-    no_channels_hint:'فرایند بزودی شروع میشود',
+    no_channels:'هنوز کانالی دریافت نشده',loading:'در حال بارگذاری...',no_messages:'هنوز پیامی در این کانال وجود ندارد',
+    no_channels_hint:'در پس‌زمینه داریم کار می‌کنیم — برای دیدن جزئیات روی',
+    no_channels_hint2:'کلیک کنید',
     scanning_resolvers:'در حال بررسی resolver‌ها',
     no_messages_hint:'برنامه در حال دریافت پیام‌ها است. لطفاً چند لحظه صبر کنید...',
     write_message:'پیام بنویسید...',configure_server:'برای شروع یک سرور راه‌اندازی کنید',
@@ -385,8 +386,9 @@ var I18N = {
   },
   en: {
     search:'Search...',settings:'Settings',profiles:'Profiles',
-    no_channels:'No channels',loading:'Loading...',no_messages:'No messages in this channel',
-    no_channels_hint:'The process will start soon',
+    no_channels:'No channels yet',loading:'Loading...',no_messages:'No messages in this channel',
+    no_channels_hint:'Working in the background — tap',
+    no_channels_hint2:'to see what\'s happening',
     scanning_resolvers:'Scanning resolvers',
     no_messages_hint:'The app is trying to fetch messages. Please wait a moment...',
     write_message:'Write a message...',configure_server:'Configure a server to start reading',
@@ -769,7 +771,10 @@ async function loadChannels(){
 
 function renderChannels(){
   var el=document.getElementById('channelList');
-  if(!channels||!channels.length){var _hint=resolverScanHint||t('no_channels_hint');el.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px">'+t('no_channels')+'<br><span id="no-ch-hint" style="font-size:11px;opacity:.7">'+_hint+'</span></div>';return}
+  if(!channels||!channels.length){
+    var _hint=resolverScanHint||(t('no_channels_hint')+' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button> '+t('no_channels_hint2'));
+    el.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px">'+t('no_channels')+'<br><span id="no-ch-hint" style="font-size:11px;opacity:.7;line-height:1.8">'+_hint+'</span></div>';return
+  }
   var pubs=[],privs=[];
   for(var i=0;i<channels.length;i++){var c=channels[i];(c.ChatType===1||c.chatType===1?privs:pubs).push({ch:c,idx:i})}
   function section(title,items){
@@ -881,8 +886,8 @@ function updateResolverScanDisplay(line){
     item.dataset.total=total;
     item.querySelector('.progress-label').textContent=t('scanning_resolvers')+' 0/'+total;
     item.querySelector('.progress-fill').style.width='0%';
-    resolverScanHint=t('scanning_resolvers')+'...';
-    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.textContent=resolverScanHint;
+    resolverScanHint=t('scanning_resolvers')+'... <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button>';
+    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.innerHTML=resolverScanHint;
     return;
   }
   if(!item)return;
@@ -893,8 +898,8 @@ function updateResolverScanDisplay(line){
     var pct=Math.round((done/tot)*100);
     item.querySelector('.progress-label').textContent=t('scanning_resolvers')+' '+done+'/'+tot;
     item.querySelector('.progress-fill').style.width=pct+'%';
-    resolverScanHint=t('scanning_resolvers')+' ('+done+'/'+tot+')';
-    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.textContent=resolverScanHint;
+    resolverScanHint=t('scanning_resolvers')+' ('+done+'/'+tot+') <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button>';
+    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.innerHTML=resolverScanHint;
     return;
   }
   // RESOLVER_SCAN done K/T
@@ -904,7 +909,7 @@ function updateResolverScanDisplay(line){
     item.querySelector('.progress-label').textContent=t('scanning_resolvers')+': '+healthy+'/'+total2+' active';
     item.querySelector('.progress-fill').style.width='100%';
     resolverScanHint='';
-    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.textContent=t('no_channels_hint');
+    var hintEl=document.getElementById('no-ch-hint');if(hintEl)hintEl.innerHTML=t('no_channels_hint')+' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button> '+t('no_channels_hint2');
     setTimeout(function(){if(item.parentNode)item.parentNode.removeChild(item)},2000);
   }
 }
