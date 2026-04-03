@@ -842,7 +842,7 @@ function addLogLine(line){
   var cls='inf';
   if(typeof line==='string'){
     // Handle structured resolver scan events — show progress bar, suppress from log
-    if(line.startsWith('RESOLVER_SCAN ')){updateResolverScanDisplay(line);return}
+    if(line.includes('RESOLVER_SCAN ')){updateResolverScanDisplay(line);return}
     if(line.includes('Error:')||line.includes('error')||line.includes('Invalid passphrase'))cls='err';
     else if(line.includes('Warning:'))cls='warn';
     else if(line.includes('OK')||line.includes('success')||line.includes('done'))cls='ok';
@@ -857,7 +857,7 @@ function updateResolverScanDisplay(line){
   var panel=document.getElementById('progressPanel');
   var item=document.getElementById('prog-resolvers');
   // RESOLVER_SCAN start N
-  var startMatch=line.match(/^RESOLVER_SCAN start (\d+)/);
+  var startMatch=line.match(/RESOLVER_SCAN start (\d+)/);
   if(startMatch){
     var total=parseInt(startMatch[1]);
     if(!item){
@@ -872,7 +872,7 @@ function updateResolverScanDisplay(line){
   }
   if(!item)return;
   // RESOLVER_SCAN progress D/T
-  var progMatch=line.match(/^RESOLVER_SCAN progress (\d+)\/(\d+)/);
+  var progMatch=line.match(/RESOLVER_SCAN progress (\d+)\/(\d+)/);
   if(progMatch){
     var done=parseInt(progMatch[1]),tot=parseInt(progMatch[2]);
     var pct=Math.round((done/tot)*100);
@@ -881,7 +881,7 @@ function updateResolverScanDisplay(line){
     return;
   }
   // RESOLVER_SCAN done K/T
-  var doneMatch=line.match(/^RESOLVER_SCAN done (\d+)\/(\d+)/);
+  var doneMatch=line.match(/RESOLVER_SCAN done (\d+)\/(\d+)/);
   if(doneMatch){
     var healthy=parseInt(doneMatch[1]),total2=parseInt(doneMatch[2]);
     item.querySelector('.progress-label').textContent='Resolvers ready: '+healthy+'/'+total2+' active';
