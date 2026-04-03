@@ -564,6 +564,7 @@ func (s *Server) startCheckerThenRefresh() {
 		return
 	}
 	checker.StartAndNotify(ctx, func() {
+		time.Sleep(1 * time.Second)
 		s.refreshMetadataOnly()
 	})
 }

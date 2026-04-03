@@ -25,7 +25,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var txtStatus: TextView
     private val handler = Handler(Looper.getMainLooper())
-    private var probeAttempt = 0
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -41,7 +40,6 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         configureWebView()
         startThefeedService()
-        probeAttempt = 0
         waitForServerThenLoad()
     }
 
@@ -84,7 +82,6 @@ class MainActivity : ComponentActivity() {
             ) {
                 // Server was reachable during probe but dropped connection — retry probe cycle
                 if (request?.isForMainFrame == true) {
-                    probeAttempt = 0
                     setStatus("Reconnecting...")
                     handler.postDelayed({ waitForServerThenLoad() }, RETRY_DELAY_MS)
                 }
@@ -102,57 +99,48 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Polls the server in a background thread until it responds with HTTP 200 (or any
-     * response — a TCP connection refused is what we're avoiding). Only then hands the
-     * URL to WebView, ensuring it never shows a browser error page on startup.
+     * Polls SharedPreferences for the port on every attempt, then probes the URL.
+     * This handles force-kill restarts where the service picks a new port:
+     * the loop follows the port change automatically instead of hammering a stale one.
      */
     private fun waitForServerThenLoad() {
-        val port = getCurrentPort()
-        if (port <= 0) {
-            if (probeAttempt < MAX_PROBE_ATTEMPTS) {
-                probeAttempt++
-                setStatus("Waiting for service... ($probeAttempt/$MAX_PROBE_ATTEMPTS)")
-                handler.postDelayed({ waitForServerThenLoad() }, PROBE_INTERVAL_MS)
-            } else {
-                setStatus("Service unavailable. Restart the app.")
-            }
-            return
-        }
-
-        val url = "http://127.0.0.1:$port"
-        setStatus("Connecting...")
-
+        setStatus("Waiting for service...")
         Thread {
             var ready = false
-            repeat(MAX_PROBE_ATTEMPTS) { attempt ->
-                if (ready) return@repeat
+            var lastPort = -1
+            for (attempt in 1..MAX_PROBE_ATTEMPTS) {
+                val port = getCurrentPort()
+                if (port <= 0) {
+                    handler.post { setStatus("Waiting for service... ($attempt/$MAX_PROBE_ATTEMPTS)") }
+                    Thread.sleep(PROBE_INTERVAL_MS)
+                    continue
+                }
+                if (port != lastPort) {
+                    // Service restarted with a new port — reset and start fresh
+                    lastPort = port
+                    handler.post { setStatus("Connecting...") }
+                }
                 try {
-                    val conn = URL(url).openConnection() as HttpURLConnection
+                    val conn = URL("http://127.0.0.1:$port").openConnection() as HttpURLConnection
                     conn.connectTimeout = PROBE_TIMEOUT_MS.toInt()
                     conn.readTimeout = PROBE_TIMEOUT_MS.toInt()
                     conn.requestMethod = "GET"
                     val code = conn.responseCode
                     conn.disconnect()
-                    if (code > 0) {      // any HTTP response means the server is up
+                    if (code > 0) {
                         ready = true
-                        return@repeat
+                        val url = "http://127.0.0.1:$port"
+                        handler.post { setStatus(""); webView.loadUrl(url) }
+                        return@Thread
                     }
                 } catch (_: Exception) {
-                    // Connection refused or timeout — server not ready yet
+                    // Connection refused — not ready yet
                 }
+                handler.post { setStatus("Waiting for server... ($attempt/$MAX_PROBE_ATTEMPTS)") }
                 Thread.sleep(PROBE_INTERVAL_MS)
-                handler.post {
-                    setStatus("Waiting for server... (${attempt + 1}/$MAX_PROBE_ATTEMPTS)")
-                }
             }
-
-            handler.post {
-                if (ready) {
-                    setStatus("")
-                    webView.loadUrl(url)
-                } else {
-                    setStatus("Could not connect. Restart the app.")
-                }
+            if (!ready) {
+                handler.post { setStatus("Could not connect. Restart the app.") }
             }
         }.start()
     }

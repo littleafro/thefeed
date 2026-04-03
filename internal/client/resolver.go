@@ -74,11 +74,13 @@ func (rc *ResolverChecker) CheckNow() {
 		return
 	}
 
-	rc.log("Checking %d resolver(s)...", len(resolvers))
+	total := len(resolvers)
+	rc.log("RESOLVER_SCAN start %d", total)
 
 	var healthy []string
 	var mu sync.Mutex
-	var wg sync.WaitGroup
+	var done int
+	wg := &sync.WaitGroup{}
 	sem := make(chan struct{}, 10) // probe up to 10 resolvers concurrently
 
 	for _, r := range resolvers {
@@ -88,14 +90,17 @@ func (rc *ResolverChecker) CheckNow() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			if rc.checkOne(r) {
-				mu.Lock()
+			ok := rc.checkOne(r)
+			mu.Lock()
+			if ok {
 				healthy = append(healthy, r)
-				mu.Unlock()
 				rc.log("Resolver OK: %s", r)
 			} else {
 				rc.log("Resolver failed: %s", r)
 			}
+			done++
+			rc.log("RESOLVER_SCAN progress %d/%d", done, total)
+			mu.Unlock()
 		}(r)
 	}
 	wg.Wait()
@@ -103,9 +108,11 @@ func (rc *ResolverChecker) CheckNow() {
 	rc.fetcher.SetActiveResolvers(healthy)
 	if len(healthy) == 0 {
 		rc.log("Resolver check done: 0/%d healthy", len(resolvers))
+		rc.log("RESOLVER_SCAN done 0/%d", total)
 		return
 	}
 	rc.log("Resolver check done: %d/%d healthy", len(healthy), len(resolvers))
+	rc.log("RESOLVER_SCAN done %d/%d", len(healthy), total)
 }
 
 // checkOne probes a single resolver by sending a metadata channel query

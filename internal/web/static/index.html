@@ -217,6 +217,7 @@ html[dir=ltr] .active-badge{margin-left:0;margin-right:6px}
           <span class="profile-btn-arrow">&#9660;</span>
         </button>
         <button class="icon-btn" onclick="openSettings()" title="Settings" data-i18n-title="settings">&#9881;</button>
+        <button class="icon-btn" onclick="jumpToLog()" title="LOG">&#128220;</button>
       </div>
       <input class="sidebar-search" id="channelSearch" type="text" data-i18n-ph="search" placeholder="Search..." oninput="filterChannels()">
     </div>
@@ -840,6 +841,8 @@ function addLogLine(line){
   var div=document.createElement('div');
   var cls='inf';
   if(typeof line==='string'){
+    // Handle structured resolver scan events — show progress bar, suppress from log
+    if(line.startsWith('RESOLVER_SCAN ')){updateResolverScanDisplay(line);return}
     if(line.includes('Error:')||line.includes('error')||line.includes('Invalid passphrase'))cls='err';
     else if(line.includes('Warning:'))cls='warn';
     else if(line.includes('OK')||line.includes('success')||line.includes('done'))cls='ok';
@@ -848,6 +851,43 @@ function addLogLine(line){
   div.className='log-line '+cls;div.textContent=line;
   el.appendChild(div);el.scrollTop=el.scrollHeight;
   while(el.children.length>200)el.removeChild(el.firstChild);
+}
+
+function updateResolverScanDisplay(line){
+  var panel=document.getElementById('progressPanel');
+  var item=document.getElementById('prog-resolvers');
+  // RESOLVER_SCAN start N
+  var startMatch=line.match(/^RESOLVER_SCAN start (\d+)/);
+  if(startMatch){
+    var total=parseInt(startMatch[1]);
+    if(!item){
+      item=document.createElement('div');item.id='prog-resolvers';item.className='progress-item';
+      item.innerHTML='<button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label"></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>';
+      panel.insertBefore(item,panel.firstChild);
+    }
+    item.dataset.total=total;
+    item.querySelector('.progress-label').textContent='Scanning resolvers 0/'+total;
+    item.querySelector('.progress-fill').style.width='0%';
+    return;
+  }
+  if(!item)return;
+  // RESOLVER_SCAN progress D/T
+  var progMatch=line.match(/^RESOLVER_SCAN progress (\d+)\/(\d+)/);
+  if(progMatch){
+    var done=parseInt(progMatch[1]),tot=parseInt(progMatch[2]);
+    var pct=Math.round((done/tot)*100);
+    item.querySelector('.progress-label').textContent='Scanning resolvers '+done+'/'+tot;
+    item.querySelector('.progress-fill').style.width=pct+'%';
+    return;
+  }
+  // RESOLVER_SCAN done K/T
+  var doneMatch=line.match(/^RESOLVER_SCAN done (\d+)\/(\d+)/);
+  if(doneMatch){
+    var healthy=parseInt(doneMatch[1]),total2=parseInt(doneMatch[2]);
+    item.querySelector('.progress-label').textContent='Resolvers ready: '+healthy+'/'+total2+' active';
+    item.querySelector('.progress-fill').style.width='100%';
+    setTimeout(function(){if(item.parentNode)item.parentNode.removeChild(item)},2000);
+  }
 }
 
 function updateProgressDisplay(line){
@@ -878,13 +918,24 @@ function toggleLog(){
   p.classList.toggle('hidden',!logVisible);
   ic.innerHTML=logVisible?'&#9660;':'&#9654;';
 }
+function openLog(){
+  if(logVisible)return;
+  logVisible=true;
+  document.getElementById('logPanel').classList.remove('hidden');
+  document.getElementById('logToggleIcon').innerHTML='&#9660;';
+}
+function jumpToLog(){
+  openChat();
+  openLog();
+  setTimeout(function(){document.getElementById('logPanel').scrollIntoView({behavior:'smooth',block:'end'})},300);
+}
 
 // ===== REFRESH =====
 function showInitProgress(){
   document.getElementById('progressPanel').innerHTML='';
   var p=document.getElementById('progressPanel');
   p.innerHTML='<div class="progress-item" id="prog-init"><button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label">'+t('loading')+'</div><div class="progress-bar"><div class="progress-fill" style="width:30%;animation:prog-pulse 1.5s ease-in-out infinite"></div></div></div>';
-  if(window.innerWidth<=768) openChat();
+  if(window.innerWidth<=768){openChat();openLog();}
 }
 function startAutoRefresh(){if(autoRefreshTimer)return;autoRefreshTimer=setInterval(function(){if(selectedChannel>0)doRefresh(true)},600000)}
 function updateNextFetchDisplay(){

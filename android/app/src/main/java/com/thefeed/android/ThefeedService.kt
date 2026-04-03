@@ -22,6 +22,7 @@ class ThefeedService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting local service..."))
+        savePort(-1)  // Clear stale port from any previous (force-killed) session
         startClientProcessAsync()
     }
 
