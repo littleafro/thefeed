@@ -112,6 +112,7 @@ func TestE2E_FetchMetadataThroughDNS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	meta, err := fetcher.FetchMetadata(context.Background())
 	if err != nil {
@@ -152,6 +153,7 @@ func TestE2E_FetchChannelMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	meta, err := fetcher.FetchMetadata(context.Background())
 	if err != nil {
@@ -197,6 +199,7 @@ func TestE2E_FetchWithDoubleLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 	fetcher.SetQueryMode(protocol.QueryMultiLabel)
 
 	meta, err := fetcher.FetchMetadata(context.Background())
@@ -232,6 +235,7 @@ func TestE2E_WrongPassphrase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -261,6 +265,7 @@ func TestE2E_LargeMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	meta, err := fetcher.FetchMetadata(context.Background())
 	if err != nil {
@@ -605,6 +610,10 @@ func TestE2E_FullRoundTrip(t *testing.T) {
 		t.Fatalf("config POST status=%d", resp.StatusCode)
 	}
 
+	// Wait for the resolver scan + initial metadata fetch triggered by config POST.
+	// The scan probes the single resolver, then onFirstDone calls refreshMetadataOnly.
+	time.Sleep(2 * time.Second)
+
 	// Refresh channels via selected-channel API semantics.
 	respRefresh1, err := http.Post(base+"/api/refresh?channel=1", "application/json", nil)
 	if err != nil {
@@ -613,7 +622,7 @@ func TestE2E_FullRoundTrip(t *testing.T) {
 	respRefresh1.Body.Close()
 	// Give channel 1 refresh goroutine time to complete before refreshing channel 2,
 	// because starting a new refresh cancels the previous in-flight refresh.
-	time.Sleep(700 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	// Channels should be populated
 	resp2, err := http.Get(base + "/api/channels")
@@ -652,7 +661,7 @@ func TestE2E_FullRoundTrip(t *testing.T) {
 		t.Fatalf("POST /api/refresh?channel=2: %v", err)
 	}
 	respRefresh2.Body.Close()
-	time.Sleep(700 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	// Messages for channel 2
 	resp4, err := http.Get(base + "/api/messages/2")
@@ -753,6 +762,7 @@ func TestE2E_AdminAllowManage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer ctxCancel()
@@ -784,6 +794,7 @@ func TestE2E_AdminNoManage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create fetcher: %v", err)
 	}
+	fetcher.SetActiveResolvers([]string{resolver})
 
 	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer ctxCancel()
@@ -1089,5 +1100,222 @@ func TestE2E_Settings_MethodNotAllowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 405 {
 		t.Errorf("expected 405, got %d", resp.StatusCode)
+	}
+}
+
+// --- SSE E2E Tests ---
+
+func TestE2E_SSE_StreamReceivesEvents(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	// Connect to SSE stream
+	resp, err := http.Get(base + "/api/events")
+	if err != nil {
+		t.Fatalf("GET /api/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+}
+
+func TestE2E_SSE_ReceivesRefreshEvents(t *testing.T) {
+	domain := "sse.example.com"
+	passphrase := "sse-test-key"
+	channels := []string{"ssechan"}
+	msgs := map[int][]protocol.Message{
+		1: {{ID: 1, Timestamp: 1700000000, Text: "SSE test msg"}},
+	}
+
+	resolver, cancelDNS := startDNSServer(t, domain, passphrase, channels, msgs)
+	defer cancelDNS()
+
+	dataDir := t.TempDir()
+	port := findFreePort(t, "tcp")
+	srv, err := web.New(dataDir, port, "")
+	if err != nil {
+		t.Fatalf("create web server: %v", err)
+	}
+	go srv.Run()
+	time.Sleep(200 * time.Millisecond)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Configure the server
+	cfgJSON := fmt.Sprintf(`{"domain":"%s","key":"%s","resolvers":["%s"],"queryMode":"single","rateLimit":0}`,
+		domain, passphrase, resolver)
+	resp, err := http.Post(base+"/api/config", "application/json", strings.NewReader(cfgJSON))
+	if err != nil {
+		t.Fatalf("POST /api/config: %v", err)
+	}
+	resp.Body.Close()
+
+	// Connect SSE stream
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", base+"/api/events", nil)
+	sseResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/events: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	// Read SSE events — we should see log events from the resolver scan
+	buf := make([]byte, 4096)
+	gotLog := false
+	for i := 0; i < 20; i++ {
+		n, err := sseResp.Body.Read(buf)
+		if err != nil {
+			break
+		}
+		chunk := string(buf[:n])
+		if strings.Contains(chunk, "event: log") {
+			gotLog = true
+			break
+		}
+	}
+	if !gotLog {
+		t.Error("expected to receive at least one log event via SSE")
+	}
+}
+
+// --- Refresh API Tests ---
+
+func TestE2E_WebAPI_RefreshQuietSkip(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	// Quiet metadata refresh on unconfigured server should return ok
+	resp := postJSON(t, base+"/api/refresh?quiet=1", "")
+	m := decodeJSON(t, resp)
+	if m["ok"] != true {
+		t.Errorf("expected ok=true, got %v", m["ok"])
+	}
+}
+
+func TestE2E_WebAPI_RefreshInvalidChannel(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	resp, err := http.Post(base+"/api/refresh?channel=abc", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("expected 400 for invalid channel, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_RefreshNegativeChannel(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	resp, err := http.Post(base+"/api/refresh?channel=-1", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("expected 400 for negative channel, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_SendNotConfigured(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	resp := postJSON(t, base+"/api/send", `{"channel":1,"text":"hello"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("send without config: expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_SendInvalidPayload(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	// Not JSON
+	resp, err := http.Post(base+"/api/send", "application/json", strings.NewReader("not json"))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+
+	// Missing fields
+	resp2 := postJSON(t, base+"/api/send", `{"channel":0,"text":""}`)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 400 {
+		t.Errorf("missing fields: expected 400, got %d", resp2.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_AdminNotConfigured(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	resp := postJSON(t, base+"/api/admin", `{"command":"list_channels"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("admin without config: expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_AdminUnknownCommand(t *testing.T) {
+	dataDir := t.TempDir()
+	port := findFreePort(t, "tcp")
+	srv, err := web.New(dataDir, port, "")
+	if err != nil {
+		t.Fatalf("create web server: %v", err)
+	}
+	go srv.Run()
+	time.Sleep(200 * time.Millisecond)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// Configure first
+	cfg := `{"domain":"test.example.com","key":"testpass","resolvers":["127.0.0.1:9999"],"queryMode":"single","rateLimit":10}`
+	http.Post(base+"/api/config", "application/json", strings.NewReader(cfg))
+	time.Sleep(100 * time.Millisecond)
+
+	resp := postJSON(t, base+"/api/admin", `{"command":"drop_tables"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("unknown admin command: expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_AdminEmptyCommand(t *testing.T) {
+	base, _ := startWebServer(t)
+
+	resp := postJSON(t, base+"/api/admin", `{"command":""}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("empty admin command: expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_WebAPI_SendTooLong(t *testing.T) {
+	dataDir := t.TempDir()
+	port := findFreePort(t, "tcp")
+	srv, err := web.New(dataDir, port, "")
+	if err != nil {
+		t.Fatalf("create web server: %v", err)
+	}
+	go srv.Run()
+	time.Sleep(200 * time.Millisecond)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	cfg := `{"domain":"test.example.com","key":"testpass","resolvers":["127.0.0.1:9999"],"queryMode":"single","rateLimit":10}`
+	http.Post(base+"/api/config", "application/json", strings.NewReader(cfg))
+	time.Sleep(100 * time.Millisecond)
+
+	longText := strings.Repeat("x", 4001)
+	body := fmt.Sprintf(`{"channel":1,"text":"%s"}`, longText)
+	resp := postJSON(t, base+"/api/send", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Errorf("send too long: expected 400, got %d", resp.StatusCode)
 	}
 }

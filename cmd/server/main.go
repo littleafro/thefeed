@@ -35,6 +35,10 @@ func main() {
 	msgLimit := flag.Int("msg-limit", 15, "Maximum messages to fetch per Telegram channel")
 	allowManage := flag.Bool("allow-manage", false, "Allow remote channel management and sending via DNS")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "thefeed-server %s\n\nServes Telegram channel content over encrypted DNS for censorship-resistant access.\n\nUsage:\n  thefeed-server [flags]\n\nFlags:\n", version.Version)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	if *showVersion {

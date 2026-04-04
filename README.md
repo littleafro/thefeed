@@ -25,6 +25,9 @@ DNS-based feed reader for Telegram channels. Designed for environments where onl
 - Browser-based web UI with RTL/Farsi support (VazirMatn font)
 - Configure via the web UI — no CLI flags needed
 - Sends encrypted DNS TXT queries via available resolvers
+- **Resolver scoring**: tracks per-resolver success rate and latency; healthier resolvers are preferred automatically
+- **Scatter mode**: fans out the same DNS request to multiple resolvers simultaneously and uses the fastest response (default: 2 concurrent resolvers per request)
+- **1-hour localStorage cache**: channel list and messages are cached in the browser — reopening the app shows cached data instantly while a fresh fetch runs in the background
 - Send messages to channels and private chats (requires server `--allow-manage`)
 - Channel management (add/remove channels remotely via admin commands)
 - Message compression (deflate) for efficient transfer
@@ -39,8 +42,9 @@ DNS-based feed reader for Telegram channels. Designed for environments where onl
 
 - Variable response and query sizes to prevent fingerprinting
 - Multiple query encoding modes for stealth
-- Resolver shuffling and rate limiting
-- Background noise traffic
+- **Resolver scoring**: per-resolver success-rate + latency scoreboard; high-scoring resolvers are picked more often via weighted-random selection
+- **Scatter mode**: same block fetched from N resolvers simultaneously, first response wins — faster fetches and implicit failover
+- Rate limiting and background noise traffic to blend in
 - Message compression to minimize query count
 
 ## Protocol
@@ -114,7 +118,7 @@ make build-server
 
 All data files (session, channels) are stored in the `--data-dir` directory (default: `./data`).
 
-Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `TELEGRAM_PASSWORD`
+Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `THEFEED_MSG_LIMIT`, `THEFEED_ALLOW_MANAGE` (set to `0` to force-disable even if the flag is baked into the service), `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `TELEGRAM_PASSWORD`
 
 #### Server Flags
 
@@ -164,6 +168,8 @@ All configuration, cache, and data files are stored in the data directory.
 | `--port` | `8080` | Web UI port |
 | `--password` | | Password for web UI (empty = no auth) |
 | `--version` | | Show version and exit |
+
+The **concurrent requests (scatter)** setting and all other profile options (resolvers, rate limit, query mode, timeout) are configured through the web UI profile editor, not CLI flags.
 
 #### Android (Termux)
 
@@ -227,7 +233,8 @@ The browser-based UI has:
 - **Next-fetch timer**: countdown to next automatic refresh
 - **Media detection**: `[IMAGE]`, `[VIDEO]`, `[DOCUMENT]` tag highlighting
 - **Log panel** (bottom): live DNS query log
-- **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, timeout, debug mode
+- **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, concurrent requests (scatter), timeout, debug mode
+- **Per-profile cache**: 1-hour browser cache so data is visible instantly on reopen
 
 ## Development
 

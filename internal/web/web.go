@@ -33,9 +33,12 @@ type Config struct {
 	Resolvers []string `json:"resolvers"`
 	QueryMode string   `json:"queryMode"`
 	RateLimit float64  `json:"rateLimit"`
-	// Timeout is the per-query DNS timeout in seconds (0 = default 5 s).
+	// Timeout is the per-query DNS timeout in seconds (0 = default 15 s).
 	// Also used as the resolver health-check probe timeout.
 	Timeout float64 `json:"timeout,omitempty"`
+	// Scatter is the number of resolvers queried simultaneously per DNS block request
+	// (0 or 1 = sequential, 2 = default parallel pair).
+	Scatter int `json:"scatter,omitempty"`
 }
 
 // Profile wraps a Config with a user-chosen nickname and a unique ID.
@@ -73,6 +76,11 @@ type Server struct {
 
 	// checker is the active resolver health-checker; set by initFetcher.
 	checker *client.ResolverChecker
+
+	// metaFetchedAt is when channels/nextFetch were last fetched from DNS.
+	// refreshChannel reuses the in-memory metadata when it is younger than metaCacheTTL.
+	metaFetchedAt time.Time
+	metaCacheTTL  time.Duration
 
 	// fetcherCtx/fetcherCancel control the lifetime of the active fetcher's
 	// background goroutines (rate limiter, noise, resolver checker).
@@ -280,9 +288,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	// Background (quiet) refreshes skip silently if one is already running,
+	// Background (quiet) metadata-only refreshes skip silently if one is already running,
 	// so the auto-refresh timer never cancels a slow in-progress fetch.
-	if r.URL.Query().Get("quiet") == "1" {
+	// Channel refreshes are NOT skipped here — refreshChannel has its own duplicate guard.
+	chParam := r.URL.Query().Get("channel")
+	if r.URL.Query().Get("quiet") == "1" && chParam == "" {
 		s.refreshMu.Lock()
 		running := s.refreshCancel != nil
 		s.refreshMu.Unlock()
@@ -291,7 +301,6 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	chParam := r.URL.Query().Get("channel")
 	if chParam != "" {
 		chNum, err := strconv.Atoi(chParam)
 		if err != nil || chNum < 1 {
@@ -422,11 +431,15 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Disable the server-wide WriteTimeout for this long-lived SSE connection.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch := make(chan string, 100)
+	ch := make(chan string, 500)
 	s.sseMu.Lock()
 	s.clients[ch] = struct{}{}
 	s.sseMu.Unlock()
@@ -446,12 +459,23 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
+	ping := time.NewTicker(30 * time.Second)
+	defer ping.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ping.C:
+			// SSE comment line as heartbeat — keeps the connection alive and
+			// lets us detect a dead client (write error).
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case msg := <-ch:
-			fmt.Fprint(w, msg)
+			if _, err := fmt.Fprint(w, msg); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}
@@ -520,8 +544,11 @@ func (s *Server) initFetcher() error {
 	if cfg.RateLimit > 0 {
 		fetcher.SetRateLimit(cfg.RateLimit)
 	}
+	if cfg.Scatter > 1 {
+		fetcher.SetScatter(cfg.Scatter)
+	}
 
-	timeout := 10 * time.Second
+	timeout := 15 * time.Second
 	if cfg.Timeout > 0 {
 		timeout = time.Duration(cfg.Timeout * float64(time.Second))
 	}
@@ -563,13 +590,77 @@ func (s *Server) startCheckerThenRefresh() {
 	if checker == nil {
 		return
 	}
+
 	checker.StartAndNotify(ctx, func() {
-		time.Sleep(1 * time.Second)
 		s.refreshMetadataOnly()
 	})
 }
 
+// nextFetchDeadline returns the Time when the server will next fetch from Telegram.
+// Returns zero value if nextFetch is not set or has already passed.
+func (s *Server) nextFetchDeadline() time.Time {
+	s.mu.RLock()
+	nf := s.nextFetch
+	s.mu.RUnlock()
+	if nf == 0 {
+		return time.Time{}
+	}
+	t := time.Unix(int64(nf), 0)
+	if time.Until(t) <= 0 {
+		return time.Time{} // already passed
+	}
+	return t
+}
+
+// waitForServerFetch blocks until the server's Telegram fetch is likely complete
+// (nextFetch + 45 s), emitting a countdown progress event each second so the UI
+// can render a live progress bar. Returns true on completion, false if ctx cancelled.
+func (s *Server) waitForServerFetch(ctx context.Context, nf uint32) bool {
+	const serverFetchDuration = 45 * time.Second
+	deadline := time.Unix(int64(nf), 0).Add(serverFetchDuration)
+	totalWait := time.Until(deadline)
+	if totalWait <= 0 {
+		totalWait = serverFetchDuration
+	}
+	totalSec := int(totalWait.Seconds()) + 1
+
+	s.addLog(fmt.Sprintf("SERVER_FETCH_WAIT start %d", totalSec))
+
+	timer := time.NewTimer(totalWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	start := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			s.addLog("SERVER_FETCH_WAIT done")
+			return false
+		case <-timer.C:
+			s.addLog("SERVER_FETCH_WAIT done")
+			return true
+		case <-ticker.C:
+			remaining := int((totalWait - time.Since(start)).Seconds())
+			if remaining < 0 {
+				remaining = 0
+			}
+			s.addLog(fmt.Sprintf("SERVER_FETCH_WAIT tick %d/%d", remaining, totalSec))
+		}
+	}
+}
+
 func (s *Server) refreshMetadataOnly() {
+	// Don't fetch before resolver scanning has found at least one healthy resolver.
+	// The onFirstDone callback in startCheckerThenRefresh is the canonical first trigger.
+	s.mu.RLock()
+	fetcherEarly := s.fetcher
+	s.mu.RUnlock()
+	if fetcherEarly != nil && len(fetcherEarly.Resolvers()) == 0 {
+		s.addLog("Waiting for resolver scan to complete...")
+		return
+	}
+
 	// Cancel any in-progress refresh and start a new cancellable one.
 	s.refreshMu.Lock()
 	if s.refreshCancel != nil {
@@ -599,6 +690,17 @@ func (s *Server) refreshMetadataOnly() {
 	}()
 
 	s.addLog("Fetching metadata...")
+
+	// If the server's next Telegram fetch is imminent (within 5 s), wait for it first.
+	if dl := s.nextFetchDeadline(); !dl.IsZero() && time.Until(dl) < 5*time.Second {
+		s.mu.RLock()
+		nf := s.nextFetch
+		s.mu.RUnlock()
+		if !s.waitForServerFetch(ctx, nf) {
+			return
+		}
+	}
+
 	meta, err := fetcher.FetchMetadata(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -619,6 +721,7 @@ func (s *Server) refreshMetadataOnly() {
 	s.channels = meta.Channels
 	s.telegramLoggedIn = meta.TelegramLoggedIn
 	s.nextFetch = meta.NextFetch
+	s.metaFetchedAt = time.Now()
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -663,31 +766,63 @@ func (s *Server) refreshChannel(channelNum int) {
 		s.refreshMu.Unlock()
 	}()
 
-	meta, err := fetcher.FetchMetadata(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			s.addLog("Refresh cancelled")
+	// Use the cached in-memory metadata if it is fresh enough (< metaCacheTTL, default 3 min).
+	// This avoids a redundant metadata DNS fetch for every channel refresh.
+	// If the metadata is stale (or was never fetched), fetch it from DNS now.
+	s.mu.RLock()
+	ttl := s.metaCacheTTL
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	// Cap TTL at the time remaining until the server's next Telegram fetch.
+	// If nextFetch is sooner than our TTL the cached metadata may already be stale.
+	if nf := s.nextFetch; nf > 0 {
+		if rem := time.Until(time.Unix(int64(nf), 0)); rem > 0 && rem < ttl {
+			ttl = rem
+		}
+	}
+	cachedChannels := s.channels
+	cachedAge := time.Since(s.metaFetchedAt)
+	s.mu.RUnlock()
+
+	var meta *protocol.Metadata
+	if len(cachedChannels) > 0 && cachedAge < ttl {
+		// Build a lightweight Metadata from the cached fields to keep the rest of the
+		// function unchanged.
+		s.mu.RLock()
+		meta = &protocol.Metadata{
+			Channels:         s.channels,
+			TelegramLoggedIn: s.telegramLoggedIn,
+			NextFetch:        s.nextFetch,
+		}
+		s.mu.RUnlock()
+	} else {
+		var err error
+		meta, err = fetcher.FetchMetadata(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				s.addLog("Refresh cancelled")
+				return
+			}
+			errStr := err.Error()
+			if strings.Contains(errStr, "integrity check failed") || strings.Contains(errStr, "message authentication failed") || strings.Contains(errStr, "cipher") {
+				s.addLog("Error: Invalid passphrase — check your encryption key in Settings")
+			} else {
+				s.addLog(fmt.Sprintf("Error: %v", err))
+			}
 			return
 		}
-		errStr := err.Error()
-		if strings.Contains(errStr, "integrity check failed") || strings.Contains(errStr, "message authentication failed") || strings.Contains(errStr, "cipher") {
-			s.addLog("Error: Invalid passphrase — check your encryption key in Settings")
-		} else {
-			s.addLog(fmt.Sprintf("Error: %v", err))
+		s.mu.Lock()
+		s.channels = meta.Channels
+		s.telegramLoggedIn = meta.TelegramLoggedIn
+		s.nextFetch = meta.NextFetch
+		s.metaFetchedAt = time.Now()
+		s.mu.Unlock()
+		if cache != nil {
+			_ = cache.PutMetadata(meta)
 		}
-		return
+		s.broadcast("event: update\ndata: \"channels\"\n\n")
 	}
-
-	s.mu.Lock()
-	s.channels = meta.Channels
-	s.telegramLoggedIn = meta.TelegramLoggedIn
-	s.nextFetch = meta.NextFetch
-	s.mu.Unlock()
-
-	if cache != nil {
-		_ = cache.PutMetadata(meta)
-	}
-	s.broadcast("event: update\ndata: \"channels\"\n\n")
 
 	channels := meta.Channels
 	if channelNum < 1 || channelNum > len(channels) {
@@ -698,11 +833,13 @@ func (s *Server) refreshChannel(channelNum int) {
 	ch := channels[channelNum-1]
 
 	// Skip refresh if the last message ID and content hash haven't changed
+	// AND we already have messages stored for this channel.
 	s.mu.RLock()
 	prevID := s.lastMsgIDs[channelNum]
 	prevHash := s.lastHashes[channelNum]
+	prevMsgs := s.messages[channelNum]
 	s.mu.RUnlock()
-	if prevID > 0 && ch.LastMsgID == prevID && ch.ContentHash == prevHash {
+	if prevID > 0 && ch.LastMsgID == prevID && ch.ContentHash == prevHash && len(prevMsgs) > 0 {
 		s.addLog(fmt.Sprintf("Channel %s: no changes (last ID: %d)", ch.Name, prevID))
 		s.broadcast(fmt.Sprintf("event: update\ndata: {\"type\":\"messages\",\"channel\":%d}\n\n", channelNum))
 		return
@@ -720,9 +857,32 @@ func (s *Server) refreshChannel(channelNum int) {
 		return
 	}
 
+	// Wrap the context with a deadline at the server's next Telegram fetch.
+	// If the server starts fetching during our block download we cancel early,
+	// wait for the fresh data to land, then restart this channel fetch.
+	fetchCtx := ctx
+	var fetchCancel context.CancelFunc
+	var fetchNF uint32
+	if dl := s.nextFetchDeadline(); !dl.IsZero() {
+		s.mu.RLock()
+		fetchNF = s.nextFetch
+		s.mu.RUnlock()
+		fetchCtx, fetchCancel = context.WithDeadline(ctx, dl)
+		defer fetchCancel()
+	}
+
 	var msgs []protocol.Message
-	msgs, err = fetcher.FetchChannel(ctx, channelNum, blockCount)
+	var err error
+	msgs, err = fetcher.FetchChannel(fetchCtx, channelNum, blockCount)
 	if err != nil {
+		if fetchCancel != nil && fetchCtx.Err() == context.DeadlineExceeded {
+			// nextFetch fired mid-download — wait for the server, then re-fetch.
+			fetchCancel()
+			if s.waitForServerFetch(ctx, fetchNF) {
+				go s.refreshChannel(channelNum)
+			}
+			return
+		}
 		if ctx.Err() != nil {
 			s.addLog("Refresh cancelled")
 			return
@@ -733,8 +893,13 @@ func (s *Server) refreshChannel(channelNum int) {
 
 	s.mu.Lock()
 	s.messages[channelNum] = msgs
-	s.lastMsgIDs[channelNum] = ch.LastMsgID
-	s.lastHashes[channelNum] = ch.ContentHash
+	// Only store the metadata IDs when we actually received messages.
+	// If the fetch returned 0 messages but the channel has content (LastMsgID > 0),
+	// keep the old IDs so the next refresh will try a full fetch instead of skipping.
+	if len(msgs) > 0 || ch.LastMsgID == 0 {
+		s.lastMsgIDs[channelNum] = ch.LastMsgID
+		s.lastHashes[channelNum] = ch.ContentHash
+	}
 	s.mu.Unlock()
 
 	if cache != nil {

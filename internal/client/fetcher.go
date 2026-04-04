@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -24,6 +26,32 @@ var noiseDomains = []string{
 	"www.youtube.com", "www.instagram.com", "www.amazon.com",
 	"www.microsoft.com", "www.apple.com", "www.github.com",
 	"www.wikipedia.org", "www.reddit.com", "www.twitter.com",
+}
+
+// resolverStat tracks per-resolver health metrics; fields are accessed with sync/atomic.
+type resolverStat struct {
+	success int64 // number of successful queries
+	failure int64 // number of failed queries
+	totalMs int64 // sum of latency in milliseconds over successful queries
+}
+
+func (s *resolverStat) score() float64 {
+	success := atomic.LoadInt64(&s.success)
+	failure := atomic.LoadInt64(&s.failure)
+	totalMs := atomic.LoadInt64(&s.totalMs)
+	total := success + failure
+	if total == 0 {
+		return 1.0 // no data yet → neutral weight
+	}
+	successRate := float64(success) / float64(total)
+	var avgMs float64
+	if success > 0 {
+		avgMs = float64(totalMs) / float64(success)
+	} else {
+		avgMs = 30000 // 30 s effective penalty for 0% success resolvers
+	}
+	// Higher success rate + lower latency → higher score.
+	return successRate / (avgMs/1000.0 + 0.1)
 }
 
 // Fetcher fetches feed blocks over DNS.
@@ -46,6 +74,17 @@ type Fetcher struct {
 
 	debug   bool
 	logFunc LogFunc
+
+	// Resolver scoring: per-resolver success/failure counters and latency.
+	stats sync.Map // string (resolver:port) -> *resolverStat
+
+	// scatter is how many resolvers to query simultaneously per DNS block request.
+	// 1 = sequential (no scatter), 2+ = fan-out (use fastest response).
+	scatter int
+
+	// exchangeFn is the function used to send a DNS message to a resolver.
+	// It defaults to a real dns.Client exchange and can be replaced in tests.
+	exchangeFn func(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, time.Duration, error)
 }
 
 // NewFetcher creates a new DNS block fetcher.
@@ -58,15 +97,22 @@ func NewFetcher(domain, passphrase string, resolvers []string) (*Fetcher, error)
 	r := make([]string, len(resolvers))
 	copy(r, resolvers)
 
-	return &Fetcher{
-		domain:          strings.TrimSuffix(domain, "."),
-		queryKey:        qk,
-		responseKey:     rk,
-		queryMode:       protocol.QuerySingleLabel,
-		allResolvers:    r,
-		activeResolvers: r,
-		timeout:         15 * time.Second,
-	}, nil
+	f := &Fetcher{
+		domain:       strings.TrimSuffix(domain, "."),
+		queryKey:     qk,
+		responseKey:  rk,
+		queryMode:    protocol.QuerySingleLabel,
+		allResolvers: r,
+		// activeResolvers starts empty — the ResolverChecker fills it in after
+		// the first health-check scan so no fetch is attempted with unvalidated resolvers.
+		timeout: 25 * time.Second,
+		scatter: 2, // query 2 resolvers in parallel by default
+	}
+	f.exchangeFn = func(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, time.Duration, error) {
+		c := &dns.Client{Timeout: f.timeout, Net: "udp"}
+		return c.ExchangeContext(ctx, m, addr)
+	}
+	return f, nil
 }
 
 // SetRateLimit sets the maximum queries per second (0 = unlimited). Must be called before Start.
@@ -128,6 +174,169 @@ func (f *Fetcher) Resolvers() []string {
 	result := make([]string, len(f.activeResolvers))
 	copy(result, f.activeResolvers)
 	return result
+}
+
+// SetScatter sets the number of resolvers queried simultaneously per DNS block request.
+// 1 = sequential (no scatter). Values > 1 fan out to N resolvers and use the fastest response.
+// Must be called before Start().
+func (f *Fetcher) SetScatter(n int) {
+	if n < 1 {
+		n = 1
+	}
+	f.scatter = n
+}
+
+// RecordSuccess records a successful DNS query for the given resolver.
+func (f *Fetcher) RecordSuccess(resolver string, latency time.Duration) {
+	if !strings.Contains(resolver, ":") {
+		resolver += ":53"
+	}
+	v, _ := f.stats.LoadOrStore(resolver, &resolverStat{})
+	s := v.(*resolverStat)
+	atomic.AddInt64(&s.success, 1)
+	atomic.AddInt64(&s.totalMs, latency.Milliseconds())
+}
+
+// RecordFailure records a failed DNS query for the given resolver.
+func (f *Fetcher) RecordFailure(resolver string) {
+	if !strings.Contains(resolver, ":") {
+		resolver += ":53"
+	}
+	v, _ := f.stats.LoadOrStore(resolver, &resolverStat{})
+	s := v.(*resolverStat)
+	atomic.AddInt64(&s.failure, 1)
+}
+
+// resolverScore returns the health score for a resolver (higher = better).
+func (f *Fetcher) resolverScore(resolver string) float64 {
+	key := resolver
+	if !strings.Contains(key, ":") {
+		key += ":53"
+	}
+	if v, ok := f.stats.Load(key); ok {
+		return v.(*resolverStat).score()
+	}
+	return 1.0 // no data yet → neutral weight
+}
+
+// pickWeightedResolvers picks up to n resolvers from the active pool using
+// weighted-random selection (higher score → more likely to be chosen).
+func (f *Fetcher) pickWeightedResolvers(n int) []string {
+	resolvers := f.Resolvers()
+	if len(resolvers) == 0 {
+		return nil
+	}
+	if n <= 0 {
+		n = 1
+	}
+	if n >= len(resolvers) {
+		// Return all resolvers sorted by score descending.
+		type scored struct {
+			r string
+			s float64
+		}
+		ss := make([]scored, len(resolvers))
+		for i, r := range resolvers {
+			ss[i] = scored{r, f.resolverScore(r)}
+		}
+		sort.Slice(ss, func(i, j int) bool { return ss[i].s > ss[j].s })
+		out := make([]string, len(ss))
+		for i, s := range ss {
+			out[i] = s.r
+		}
+		return out
+	}
+	// Weighted random sampling without replacement.
+	weights := make([]float64, len(resolvers))
+	total := 0.0
+	for i, r := range resolvers {
+		w := f.resolverScore(r)
+		if w < 0.001 {
+			w = 0.001 // every resolver keeps a minimal chance
+		}
+		weights[i] = w
+		total += w
+	}
+	picked := make([]string, 0, n)
+	for len(picked) < n && total > 0 {
+		r := rand.Float64() * total
+		cumul := 0.0
+		chosen := -1
+		for i, w := range weights {
+			if w == 0 {
+				continue
+			}
+			cumul += w
+			if r < cumul {
+				chosen = i
+				break
+			}
+		}
+		if chosen < 0 {
+			// Floating-point edge case: pick last non-zero entry.
+			for i := len(weights) - 1; i >= 0; i-- {
+				if weights[i] > 0 {
+					chosen = i
+					break
+				}
+			}
+		}
+		if chosen < 0 {
+			break
+		}
+		picked = append(picked, resolvers[chosen])
+		total -= weights[chosen]
+		weights[chosen] = 0
+	}
+	return picked
+}
+
+// scatterQuery sends qname to all given resolvers concurrently and returns
+// the first successful response. The winning response cancels the others.
+func (f *Fetcher) scatterQuery(ctx context.Context, resolvers []string, qname string) ([]byte, error) {
+	if len(resolvers) == 1 {
+		return f.queryResolver(ctx, resolvers[0], qname)
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	resultCh := make(chan result, len(resolvers))
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for i, r := range resolvers {
+		go func(resolver string, idx int) {
+			// Stagger launches: first resolver fires immediately, others wait
+			// a random 50–300 ms to avoid a simultaneous burst.
+			if idx > 0 {
+				jitter := time.Duration(50+rand.Intn(250)) * time.Millisecond
+				select {
+				case <-time.After(jitter):
+				case <-subCtx.Done():
+					return
+				}
+			}
+			data, err := f.queryResolver(subCtx, resolver, qname)
+			select {
+			case resultCh <- result{data, err}:
+			case <-subCtx.Done():
+			}
+		}(r, i)
+	}
+	var lastErr error
+	for i := 0; i < len(resolvers); i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case r := <-resultCh:
+			if r.err == nil {
+				cancel() // cancel remaining in-flight queries
+				return r.data, nil
+			}
+			lastErr = r.err
+		}
+	}
+	return nil, lastErr
 }
 
 // Start launches background goroutines (rate limiter and noise generator).
@@ -244,7 +453,7 @@ func (f *Fetcher) rateWait(ctx context.Context) error {
 // It enqueues through the rate limiter and respects ctx cancellation.
 // On transient failure it retries up to 2 additional times with a short back-off.
 func (f *Fetcher) FetchBlock(ctx context.Context, channel, block uint16) ([]byte, error) {
-	const maxAttempts = 10
+	const maxAttempts = 20
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
@@ -268,31 +477,23 @@ func (f *Fetcher) FetchBlock(ctx context.Context, channel, block uint16) ([]byte
 			f.log("[debug] query ch=%d blk=%d attempt=%d qname=%s", channel, block, attempt+1, qname)
 		}
 
-		resolvers := f.Resolvers()
-		if len(resolvers) == 0 {
+		scatter := f.scatter
+		if scatter < 1 {
+			scatter = 1
+		}
+		picked := f.pickWeightedResolvers(scatter)
+		if len(picked) == 0 {
 			return nil, fmt.Errorf("no active resolvers")
 		}
 
-		// Shuffle to spread load across resolvers.
-		shuffled := make([]string, len(resolvers))
-		copy(shuffled, resolvers)
-		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
-
-		for _, resolver := range shuffled {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			data, err := f.queryResolver(ctx, resolver, qname)
-			if err != nil {
-				lastErr = err
-				continue
-			}
+		data, err := f.scatterQuery(ctx, picked, qname)
+		if err == nil {
 			if f.debug {
 				f.log("[debug] response ch=%d blk=%d len=%d", channel, block, len(data))
 			}
 			return data, nil
 		}
-		lastErr = fmt.Errorf("all resolvers failed: %w", lastErr)
+		lastErr = fmt.Errorf("scatter query failed: %w", err)
 		if attempt+1 < maxAttempts {
 			f.log("block ch=%d blk=%d attempt %d/%d failed, retrying: %v", channel, block, attempt+1, maxAttempts, lastErr)
 		}
@@ -418,22 +619,33 @@ func (f *Fetcher) queryResolver(ctx context.Context, resolver, qname string) ([]
 		resolver += ":53"
 	}
 
+	start := time.Now()
 	resp, err := f.exchangeResolver(ctx, resolver, qname)
+	latency := time.Since(start)
 	if err != nil {
+		f.RecordFailure(resolver)
 		return nil, err
 	}
 
 	if resp.Rcode != dns.RcodeSuccess {
+		f.RecordFailure(resolver)
 		return nil, fmt.Errorf("dns error from %s: %s", resolver, dns.RcodeToString[resp.Rcode])
 	}
 
 	for _, ans := range resp.Answer {
 		if txt, ok := ans.(*dns.TXT); ok {
 			encoded := strings.Join(txt.Txt, "")
-			return protocol.DecodeResponse(f.responseKey, encoded)
+			data, err := protocol.DecodeResponse(f.responseKey, encoded)
+			if err != nil {
+				f.RecordFailure(resolver)
+				return nil, err
+			}
+			f.RecordSuccess(resolver, latency)
+			return data, nil
 		}
 	}
 
+	f.RecordFailure(resolver)
 	return nil, fmt.Errorf("no TXT record in response from %s", resolver)
 }
 
@@ -441,14 +653,12 @@ func (f *Fetcher) exchangeResolver(ctx context.Context, resolver, qname string) 
 	resolverCtx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
 
-	c := &dns.Client{Timeout: f.timeout, Net: "udp"}
-
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
 	m.RecursionDesired = true
 	m.SetEdns0(4096, false)
 
-	resp, _, err := c.ExchangeContext(resolverCtx, m, resolver)
+	resp, _, err := f.exchangeFn(resolverCtx, m, resolver)
 	if err != nil {
 		return nil, fmt.Errorf("dns exchange with %s: %w", resolver, err)
 	}

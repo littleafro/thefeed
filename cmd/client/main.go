@@ -17,6 +17,10 @@ func main() {
 	port := flag.Int("port", 8080, "Web UI port")
 	password := flag.String("password", "", "Admin password for web UI (empty = no auth)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "thefeed-client %s\n\nWeb UI for reading thefeed content over DNS.\n\nUsage:\n  thefeed-client [flags]\n\nFlags:\n", version.Version)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	if *showVersion {

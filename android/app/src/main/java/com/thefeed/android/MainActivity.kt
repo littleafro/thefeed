@@ -19,6 +19,7 @@ import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.app.AlertDialog
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -57,8 +58,23 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermission()
         configureWebView()
+        registerBackHandler()
         startThefeedService()
         waitForServerThenLoad()
+    }
+
+    private fun registerBackHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    // No WebView history to go back to — move app to background
+                    // instead of finishing the activity (keeps the service alive).
+                    moveTaskToBack(true)
+                }
+            }
+        })
     }
 
     private fun requestNotificationPermission() {

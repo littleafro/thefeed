@@ -24,10 +24,10 @@ type ResolverChecker struct {
 }
 
 // NewResolverChecker creates a health checker for the resolvers in fetcher.
-// timeout is the per-probe deadline; 0 uses a 5-second default.
+// timeout is the per-probe deadline; 0 uses a 15-second default.
 func NewResolverChecker(fetcher *Fetcher, timeout time.Duration) *ResolverChecker {
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = 15 * time.Second
 	}
 	return &ResolverChecker{
 		fetcher: fetcher,
@@ -48,18 +48,38 @@ func (rc *ResolverChecker) Start(ctx context.Context) {
 }
 
 // StartAndNotify is like Start but calls onFirstDone (if non-nil) after the
-// initial health-check pass finishes, before the periodic ticker begins.
-// This lets callers sequence "DNS scan → metadata fetch" without races.
+// first successful health-check pass (i.e. at least one resolver is healthy),
+// before the periodic ticker begins.
+// If the initial scan finds zero healthy resolvers it retries every minute
+// until at least one resolver becomes reachable (or ctx is cancelled).
 // Safe to call only once per checker instance; subsequent calls are no-ops.
 func (rc *ResolverChecker) StartAndNotify(ctx context.Context, onFirstDone func()) {
 	if !rc.started.CompareAndSwap(false, true) {
 		return // already started — prevent duplicate scan goroutines
 	}
 	go func() {
-		rc.CheckNow(ctx)
+		// Keep scanning every minute until we find at least one healthy resolver.
+		for {
+			rc.CheckNow(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			if len(rc.fetcher.Resolvers()) > 0 {
+				break // at least one resolver is up — proceed normally
+			}
+			rc.log("No healthy resolvers found — retrying in 1 minute...")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Minute):
+			}
+		}
+
 		if onFirstDone != nil && ctx.Err() == nil {
 			onFirstDone()
 		}
+
+		// Periodic re-check every 30 minutes.
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -68,6 +88,23 @@ func (rc *ResolverChecker) StartAndNotify(ctx context.Context, onFirstDone func(
 				return
 			case <-ticker.C:
 				rc.CheckNow(ctx)
+				// If the periodic check leaves us with no resolvers,
+				// fall back into the retry-every-minute loop.
+				if ctx.Err() == nil && len(rc.fetcher.Resolvers()) == 0 {
+					rc.log("All resolvers lost — scanning every minute until one recovers...")
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(1 * time.Minute):
+						}
+						rc.CheckNow(ctx)
+						if ctx.Err() != nil || len(rc.fetcher.Resolvers()) > 0 {
+							break
+						}
+						rc.log("Still no healthy resolvers — retrying in 1 minute...")
+					}
+				}
 			}
 		}
 	}()
@@ -110,7 +147,7 @@ func (rc *ResolverChecker) CheckNow(ctx context.Context) {
 				rc.log("Resolver failed: %s", r)
 			}
 			done++
-			rc.log("RESOLVER_SCAN progress %d/%d", done, total)
+			rc.log("RESOLVER_SCAN progress %d/%d healthy=%d", done, total, len(healthy))
 			mu.Unlock()
 		}(r)
 	}
@@ -131,8 +168,11 @@ func (rc *ResolverChecker) CheckNow(ctx context.Context) {
 }
 
 // checkOne probes a single resolver by sending a metadata channel query
-// (channel 0, block 0). A successful DNS response (any rcode that isn't a
-// network/timeout error) means the resolver is reachable and understands the domain.
+// (channel 0, block 0). A resolver is considered healthy only if it returns
+// a DNS response containing at least one TXT record that can be decoded with
+// the fetcher's response key — the same bar as a real data fetch.
+// This filters out resolvers that are reachable but strip TXT records, or
+// that resolve the domain through a path that doesn't reach the thefeed server.
 func (rc *ResolverChecker) checkOne(ctx context.Context, resolver string) bool {
 	if !strings.Contains(resolver, ":") {
 		resolver += ":53"
@@ -157,10 +197,27 @@ func (rc *ResolverChecker) checkOne(ctx context.Context, resolver string) bool {
 	m.RecursionDesired = true
 	m.SetEdns0(4096, false)
 
+	start := time.Now()
 	resp, _, err := c.ExchangeContext(probeCtx, m, resolver)
-	// We consider the resolver healthy if we get any DNS response back
-	// (even NXDOMAIN means the resolver forwarded the query to our server).
-	return err == nil && resp != nil
+	latency := time.Since(start)
+	if err != nil || resp == nil {
+		rc.fetcher.RecordFailure(resolver)
+		return false
+	}
+
+	// Require a decodable TXT record — same check as a real fetch.
+	for _, ans := range resp.Answer {
+		if txt, ok := ans.(*dns.TXT); ok {
+			encoded := strings.Join(txt.Txt, "")
+			if _, decErr := protocol.DecodeResponse(rc.fetcher.responseKey, encoded); decErr == nil {
+				rc.fetcher.RecordSuccess(resolver, latency)
+				return true
+			}
+		}
+	}
+
+	rc.fetcher.RecordFailure(resolver)
+	return false
 }
 
 func (rc *ResolverChecker) log(format string, args ...any) {
