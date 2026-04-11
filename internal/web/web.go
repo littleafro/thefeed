@@ -109,6 +109,8 @@ type Server struct {
 	clients map[chan string]struct{}
 
 	stopRefresh chan struct{}
+
+	scanner *client.ResolverScanner
 }
 
 // New creates a new web server.
@@ -124,6 +126,8 @@ func New(dataDir string, port int, password string) (*Server, error) {
 		}
 	}()
 
+	scanner := client.NewResolverScanner()
+
 	s := &Server{
 		dataDir:         dataDir,
 		port:            port,
@@ -133,6 +137,7 @@ func New(dataDir string, port int, password string) (*Server, error) {
 		channelFetching: make(map[int]bool),
 		lastMsgIDs:      make(map[int]uint32),
 		lastHashes:      make(map[int]uint32),
+		scanner:         scanner,
 	}
 
 	cfg, err := s.loadConfig()
@@ -182,6 +187,13 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/version-check", s.handleVersionCheck)
 	mux.HandleFunc("/api/cache/clear", s.handleClearCache)
 	mux.HandleFunc("/api/resolvers/apply-saved", s.handleApplySavedResolvers)
+	mux.HandleFunc("/api/scanner/start", s.handleScannerStart)
+	mux.HandleFunc("/api/scanner/stop", s.handleScannerStop)
+	mux.HandleFunc("/api/scanner/pause", s.handleScannerPause)
+	mux.HandleFunc("/api/scanner/resume", s.handleScannerResume)
+	mux.HandleFunc("/api/scanner/progress", s.handleScannerProgress)
+	mux.HandleFunc("/api/scanner/apply", s.handleScannerApply)
+	mux.HandleFunc("/api/scanner/presets", s.handleScannerPresets)
 	mux.HandleFunc("/", s.handleIndex)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
@@ -643,6 +655,7 @@ func (s *Server) initFetcher() error {
 		debug = pl.Debug
 	}
 	fetcher.SetDebug(debug)
+	s.scanner.SetDebug(debug)
 	if cfg.RateLimit > 0 {
 		fetcher.SetRateLimit(cfg.RateLimit)
 	}
@@ -707,6 +720,7 @@ func (s *Server) checkLatestVersion(ctx context.Context) (string, error) {
 		debug = pl.Debug
 	}
 	fetcher.SetDebug(debug)
+	s.scanner.SetDebug(debug)
 	if cfg.RateLimit > 0 {
 		fetcher.SetRateLimit(cfg.RateLimit)
 	}
@@ -1405,6 +1419,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if f != nil {
 			f.SetDebug(req.Debug)
 		}
+		s.scanner.SetDebug(req.Debug)
 		writeJSON(w, map[string]any{"ok": true})
 
 	default:

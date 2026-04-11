@@ -232,6 +232,25 @@ The browser-based UI has:
 - **Log panel** (bottom): live DNS query log
 - **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, concurrent requests (scatter), timeout, debug mode
 - **Per-profile cache**: 1-hour browser cache so data is visible instantly on reopen
+- **Resolver Scanner**: scan IP ranges and CIDRs to discover working DNS resolvers
+
+### Resolver Scanner
+
+The web UI includes a built-in resolver scanner (🔍 icon in sidebar) that probes IP ranges to discover DNS servers capable of reaching your thefeed server. Features:
+
+- **Flexible targets**: enter individual IPs, CIDRs (e.g. `5.1.0.0/16`), or domain names — one per line
+- **Iran CIDRs preset**: one-click button to load a curated list of Iranian ISP ranges
+- **Profile-aware**: select which profile's domain and passphrase to use for probing
+- **Configurable**: set concurrency (default 50), timeout (default 15s), and max IPs to scan
+- **Expand /24**: when a working resolver is found, automatically scan all nearby IPs in the same /24 subnet
+- **Pause / Resume / Stop**: full control over long-running scans (pause actually stops dispatching new probes)
+- **Response time**: results include latency so you can pick the fastest resolvers
+- **Selectable results**: checkboxes to select which resolvers to apply or copy
+- **Apply results**: append to or overwrite your profile's resolver list directly from the scanner
+- **Copy**: per-IP copy buttons, copy selected, or copy all discovered resolver IPs
+- **New Scan**: reset the UI to start a fresh scan after completion
+- **Debug logging**: when debug mode is enabled, individual probe queries/responses are logged
+- **Profile editor shortcut**: open the scanner directly from a profile's edit page with "Find Resolvers" button
 
 ## Development
 
