@@ -40,8 +40,8 @@ const (
 	// Message header sizes (in the serialized message stream).
 	MsgIDSize          = 4
 	MsgTimestampSize   = 4
-	MsgLengthSize      = 2
-	MsgHeaderSize      = MsgIDSize + MsgTimestampSize + MsgLengthSize // 10
+	MsgLengthSize      = 4
+	MsgHeaderSize      = MsgIDSize + MsgTimestampSize + MsgLengthSize // 12
 	MsgContentHashSize = 4
 )
 
@@ -239,7 +239,7 @@ func SerializeMessages(msgs []Message) []byte {
 		off += MsgIDSize
 		binary.BigEndian.PutUint32(buf[off:], msg.Timestamp)
 		off += MsgTimestampSize
-		binary.BigEndian.PutUint16(buf[off:], uint16(len(textBytes)))
+		binary.BigEndian.PutUint32(buf[off:], uint32(len(textBytes)))
 		off += MsgLengthSize
 		copy(buf[off:], textBytes)
 		off += len(textBytes)
@@ -261,7 +261,7 @@ func ParseMessages(data []byte) ([]Message, error) {
 		off += MsgIDSize
 		ts := binary.BigEndian.Uint32(data[off:])
 		off += MsgTimestampSize
-		textLen := int(binary.BigEndian.Uint16(data[off:]))
+		textLen := int(binary.BigEndian.Uint32(data[off:]))
 		off += MsgLengthSize
 
 		if off+textLen > len(data) {

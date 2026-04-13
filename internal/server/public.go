@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -23,7 +25,10 @@ type PublicReader struct {
 	channels []string
 	feed     *Feed
 	msgLimit int
-	baseCh   int
+	// imageMaxKB controls the maximum downloaded image size per post when
+	// embedding image data directly into DNS-delivered message text.
+	imageMaxKB int
+	baseCh     int
 
 	client  *http.Client
 	baseURL string
@@ -36,7 +41,7 @@ type PublicReader struct {
 }
 
 // NewPublicReader creates a reader for public channels without Telegram login.
-func NewPublicReader(channelUsernames []string, feed *Feed, msgLimit int, baseCh int) *PublicReader {
+func NewPublicReader(channelUsernames []string, feed *Feed, msgLimit int, imageMaxKB int, baseCh int) *PublicReader {
 	cleaned := make([]string, len(channelUsernames))
 	for i, u := range channelUsernames {
 		cleaned[i] = strings.TrimPrefix(strings.TrimSpace(u), "@")
@@ -47,11 +52,15 @@ func NewPublicReader(channelUsernames []string, feed *Feed, msgLimit int, baseCh
 	if baseCh <= 0 {
 		baseCh = 1
 	}
+	if imageMaxKB < 0 {
+		imageMaxKB = 500
+	}
 	return &PublicReader{
-		channels: cleaned,
-		feed:     feed,
-		msgLimit: msgLimit,
-		baseCh:   baseCh,
+		channels:   cleaned,
+		feed:       feed,
+		msgLimit:   msgLimit,
+		imageMaxKB: imageMaxKB,
+		baseCh:     baseCh,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -165,7 +174,11 @@ func (pr *PublicReader) fetchChannel(ctx context.Context, username string) ([]pr
 	if err != nil {
 		return nil, err
 	}
-	return parsePublicMessages(body)
+	msgs, err := parsePublicMessages(body)
+	if err != nil {
+		return nil, err
+	}
+	return pr.embedImagesInMessages(ctx, msgs), nil
 }
 
 type publicMessage struct {
@@ -192,6 +205,84 @@ func mergeMessages(old, new []protocol.Message) []protocol.Message {
 		return merged[i].ID > merged[j].ID
 	})
 	return merged
+}
+
+func (pr *PublicReader) embedImagesInMessages(ctx context.Context, msgs []protocol.Message) []protocol.Message {
+	if len(msgs) == 0 || pr.imageMaxKB == 0 {
+		return msgs
+	}
+	out := make([]protocol.Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		urlVal := extractImageURLMarker(out[i].Text)
+		if urlVal == "" {
+			continue
+		}
+		mimeType, encoded, byteLen := pr.fetchInlineImage(ctx, urlVal)
+		if encoded == "" {
+			continue
+		}
+		out[i].Text = replaceImageURLWithInlineData(out[i].Text, mimeType, encoded, byteLen)
+	}
+	return out
+}
+
+func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mimeType, encoded string, byteLen int) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", "", 0
+	}
+	maxBytes := int64(pr.imageMaxKB) * 1024
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", 0
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0; +https://github.com/sartoopjj/thefeed)")
+
+	resp, err := pr.client.Do(req)
+	if err != nil {
+		return "", "", 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", 0
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	if !strings.HasPrefix(ct, "image/") {
+		return "", "", 0
+	}
+	if resp.ContentLength > maxBytes {
+		return "", "", 0
+	}
+	var buf bytes.Buffer
+	limited := io.LimitReader(resp.Body, maxBytes+1)
+	if _, err := io.Copy(&buf, limited); err != nil {
+		return "", "", 0
+	}
+	if int64(buf.Len()) > maxBytes {
+		return "", "", 0
+	}
+	if buf.Len() == 0 {
+		return "", "", 0
+	}
+	return ct, base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len()
+}
+
+func extractImageURLMarker(text string) string {
+	idx := strings.Index(text, "\n[IMG_URL]")
+	if idx == -1 {
+		return ""
+	}
+	return strings.TrimSpace(text[idx+len("\n[IMG_URL]"):])
+}
+
+func replaceImageURLWithInlineData(text, mimeType, encoded string, byteLen int) string {
+	idx := strings.Index(text, "\n[IMG_URL]")
+	if idx == -1 {
+		return text
+	}
+	prefix := text[:idx]
+	return fmt.Sprintf("%s\n[IMG_MIME]%s\n[IMG_SIZE]%d\n[IMG_B64]%s", prefix, mimeType, byteLen, encoded)
 }
 
 func parsePublicMessages(body []byte) ([]protocol.Message, error) {

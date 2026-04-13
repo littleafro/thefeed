@@ -35,6 +35,7 @@ func main() {
 	sessionPath := flag.String("session", "", "Path to Telegram session file (default: {data-dir}/session.json)")
 	maxPadding := flag.Int("padding", 32, "Max random padding bytes in DNS responses (anti-DPI, 0=disabled)")
 	msgLimit := flag.Int("msg-limit", 15, "Maximum messages to fetch per Telegram channel")
+	publicImageKB := flag.Int("public-image-kb", 500, "Maximum public image size in KB to embed in DNS-delivered messages (0 disables image embedding)")
 	allowManage := flag.Bool("allow-manage", false, "Allow remote channel management and sending via DNS")
 	debug := flag.Bool("debug", false, "Log every decoded DNS query")
 	showVersion := flag.Bool("version", false, "Show version and exit")
@@ -82,6 +83,13 @@ func main() {
 		if v := os.Getenv("THEFEED_MSG_LIMIT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				*msgLimit = n
+			}
+		}
+	}
+	if *publicImageKB == 500 {
+		if v := os.Getenv("THEFEED_PUBLIC_IMAGE_KB"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				*publicImageKB = n
 			}
 		}
 	}
@@ -149,6 +157,7 @@ func main() {
 		XRSSInstances: *xRSSInstances,
 		MaxPadding:    *maxPadding,
 		MsgLimit:      *msgLimit,
+		PublicImageKB: *publicImageKB,
 		NoTelegram:    *noTelegram,
 		AllowManage:   *allowManage,
 		Debug:         *debug,

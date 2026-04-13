@@ -1315,9 +1315,9 @@
           channels yet</div>
       </div>
       <div class="sidebar-footer">
-        TELEGRAM: <a href="https://t.me/networkti" target="_blank">@networkti</a>
+        By <a href="https://t.me/networkti" target="_blank">@networkti</a>, Edited by <a href="https://t.me/littleafro" target="_blank">@littleafro</a>
         &middot;
-        <a href="https://github.com/sartoopjj/thefeed" target="_blank">GitHub</a>
+        <a href="https://github.com/littleafro/thefeed" target="_blank">GitHub</a>
       </div>
     </div>
 
@@ -2455,11 +2455,28 @@
         var timeStr = ts.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
         var text = msg.Text || msg.text || '';
         currentMsgTexts.push(text);
-        var imageURL = '';
+        var imageURL = '', imageMime = '', imageB64 = '', imageSize = 0;
         var markerIdx = text.indexOf('\n[IMG_URL]');
         if (markerIdx !== -1) {
           imageURL = text.substring(markerIdx + '\n[IMG_URL]'.length).trim();
           text = text.substring(0, markerIdx);
+        }
+        var mimeIdx = text.indexOf('\n[IMG_MIME]');
+        if (mimeIdx !== -1) {
+          var afterMime = text.substring(mimeIdx + '\n[IMG_MIME]'.length);
+          var mimeLineEnd = afterMime.indexOf('\n');
+          imageMime = (mimeLineEnd === -1 ? afterMime : afterMime.substring(0, mimeLineEnd)).trim();
+          text = text.substring(0, mimeIdx);
+        }
+        var sizeIdx = (mimeIdx !== -1 ? (msg.Text || msg.text || '').indexOf('\n[IMG_SIZE]') : -1);
+        if (sizeIdx !== -1) {
+          var afterSize = (msg.Text || msg.text || '').substring(sizeIdx + '\n[IMG_SIZE]'.length);
+          var sizeLineEnd = afterSize.indexOf('\n');
+          imageSize = parseInt((sizeLineEnd === -1 ? afterSize : afterSize.substring(0, sizeLineEnd)).trim(), 10) || 0;
+        }
+        var b64Idx = (msg.Text || msg.text || '').indexOf('\n[IMG_B64]');
+        if (b64Idx !== -1) {
+          imageB64 = (msg.Text || msg.text || '').substring(b64Idx + '\n[IMG_B64]'.length).trim();
         }
         var mediaHtml = '', textHtml = esc(text);
         var mediaTypes = ['[IMAGE]', '[VIDEO]', '[FILE]', '[AUDIO]', '[STICKER]', '[GIF]', '[POLL]', '[CONTACT]', '[LOCATION]'];
@@ -2469,8 +2486,10 @@
             textHtml = esc(text.substring(mediaTypes[m].length).replace(/^\n/, '')); break
           }
         }
-        if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageURL.indexOf('https://') === 0) {
-          mediaHtml += '<div style="margin:8px 0"><img loading="lazy" src="/api/image-proxy?maxKB=' + maxImageKB + '&url=' + encodeURIComponent(imageURL) + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" /></div>';
+        if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageB64 && imageMime.indexOf('image/') === 0 && (!imageSize || imageSize <= maxImageKB * 1024)) {
+          mediaHtml += '<div style="margin:8px 0"><img loading="lazy" src="data:' + esc(imageMime) + ';base64,' + imageB64 + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" /></div>';
+        } else if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageURL.indexOf('https://') === 0) {
+          mediaHtml += '<div class="media-tag" style="margin-top:6px">Image available on source URL</div>';
         }
         html += '<div class="msg' + (isPersian(text) ? ' rtl-msg' : '') + '" dir="auto">' + mediaHtml + textHtml + '<div class="msg-meta"><button class="msg-copy-btn" onclick="copyMsg(' + i + ')" title="' + t('copy') + '">&#128203;</button><span>#' + id + '</span><span>' + timeStr + '</span></div></div>';
       }

@@ -21,6 +21,7 @@ type Config struct {
 	XRSSInstances string
 	MaxPadding    int
 	MsgLimit      int  // max messages per channel (0 = default 15)
+	PublicImageKB int  // max image size (KB) to inline in DNS payloads for public channel posts
 	NoTelegram    bool // if true, fetch public channels without Telegram login
 	AllowManage   bool // if true, remote channel management and sending via DNS is allowed
 	Debug         bool // if true, log every decoded DNS query
@@ -96,7 +97,11 @@ func (s *Server) Run(ctx context.Context) error {
 		if msgLimit <= 0 {
 			msgLimit = 15
 		}
-		publicReader := NewPublicReader(s.telegramChannels, s.feed, msgLimit, 1)
+		publicImageKB := s.cfg.PublicImageKB
+		if publicImageKB <= 0 {
+			publicImageKB = 500
+		}
+		publicReader := NewPublicReader(s.telegramChannels, s.feed, msgLimit, publicImageKB, 1)
 		channelCtl = publicReader
 		go func() {
 			if err := publicReader.Run(ctx); err != nil && ctx.Err() == nil {
