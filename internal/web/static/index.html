@@ -1332,8 +1332,6 @@
           <span class="next-fetch-label" id="nextFetchTimer"></span><span class="next-fetch-info" id="nextFetchInfoBtn"
             style="display:none" data-i18n-title="next_fetch_info" title="" onclick="showToast(t('next_fetch_info'))"
             tabindex="0">ⓘ</span>
-          <button class="icon-btn" id="refreshBtn" onclick="doRefreshUI()" title="Refresh"
-            style="width:40px;height:40px;font-size:20px">&#8635;</button>
         </div>
       </div>
       <div class="messages" id="messages">
@@ -2366,7 +2364,6 @@
         var num3 = k + 1, lid = channels[k].LastMsgID || channels[k].lastMsgID || 0;
         if (previousMsgIDs[num3] > 0 && lid > previousMsgIDs[num3] && num3 !== selectedChannel) { hasNew = true; break }
       }
-      document.getElementById('refreshBtn').classList.toggle('refresh-has-new', hasNew);
     }
 
     async function selectChannel(num) {
@@ -2678,7 +2675,7 @@
       p.innerHTML = '<div class="progress-item" id="prog-init" data-last-update="' + Date.now() + '"><button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label">' + t('loading') + '</div><div class="progress-bar"><div class="progress-fill" style="width:30%;animation:prog-pulse 1.5s ease-in-out infinite"></div></div></div>';
       if (window.innerWidth <= 768) { openChat(); openLog(); }
     }
-    function startAutoRefresh() { if (autoRefreshTimer) return; autoRefreshTimer = setInterval(function () { if (selectedChannel > 0) doRefresh(true) }, 600000) }
+    function startAutoRefresh() { if (autoRefreshTimer) return; autoRefreshTimer = setInterval(function () { doRefresh(true) }, 300000) }
     function updateNextFetchDisplay() {
       if (nextFetchInterval) clearInterval(nextFetchInterval);
       var el = document.getElementById('nextFetchTimer');
@@ -2697,18 +2694,10 @@
       }
       tick(); nextFetchInterval = setInterval(tick, 1000);
     }
-    async function doRefreshUI() {
-      var btn = document.getElementById('refreshBtn');
-      btn.style.animation = 'spin .8s linear';
-      showToast(t('refreshing'));
-      await doRefresh(false);
-      setTimeout(function () { btn.style.animation = '' }, 800);
-    }
     async function doRefresh(quiet) {
       try {
         var url = '/api/refresh';
-        if (selectedChannel > 0) url += '?channel=' + selectedChannel;
-        if (quiet) url += (url.includes('?') ? '&' : '?') + 'quiet=1';
+        if (quiet) url += '?quiet=1';
         await fetch(url, { method: 'POST' });
         if (!quiet && selectedChannel > 0) setTimeout(function () { loadChannels(); loadMessages(selectedChannel) }, 3000);
       } catch (e) { }

@@ -1,14 +1,18 @@
 package server
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +42,11 @@ type PublicReader struct {
 	cacheTTL time.Duration
 
 	refreshCh chan struct{}
+	cacheDir  string
+
+	imageCursor    map[string]int
+	lastImageID    map[string]uint32
+	imageCacheLock sync.Mutex
 }
 
 // NewPublicReader creates a reader for public channels without Telegram login.
@@ -64,10 +73,13 @@ func NewPublicReader(channelUsernames []string, feed *Feed, msgLimit int, imageM
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL:   "https://t.me/s",
-		cache:     make(map[string]cachedMessages),
-		cacheTTL:  10 * time.Minute,
-		refreshCh: make(chan struct{}, 1),
+		baseURL:     "https://t.me/s",
+		cache:       make(map[string]cachedMessages),
+		cacheTTL:    10 * time.Minute,
+		refreshCh:   make(chan struct{}, 1),
+		cacheDir:    filepath.Join(os.TempDir(), "thefeed-image-cache"),
+		imageCursor: make(map[string]int),
+		lastImageID: make(map[string]uint32),
 	}
 }
 
@@ -178,7 +190,7 @@ func (pr *PublicReader) fetchChannel(ctx context.Context, username string) ([]pr
 	if err != nil {
 		return nil, err
 	}
-	return pr.embedImagesInMessages(ctx, msgs), nil
+	return pr.embedImagesInMessages(ctx, username, msgs), nil
 }
 
 type publicMessage struct {
@@ -207,13 +219,48 @@ func mergeMessages(old, new []protocol.Message) []protocol.Message {
 	return merged
 }
 
-func (pr *PublicReader) embedImagesInMessages(ctx context.Context, msgs []protocol.Message) []protocol.Message {
+func (pr *PublicReader) embedImagesInMessages(ctx context.Context, channel string, msgs []protocol.Message) []protocol.Message {
 	if len(msgs) == 0 || pr.imageMaxKB == 0 {
 		return msgs
 	}
+	_ = os.MkdirAll(pr.cacheDir, 0700)
 	out := make([]protocol.Message, len(msgs))
 	copy(out, msgs)
+	imageIdx := make([]int, 0, len(out))
 	for i := range out {
+		if extractImageURLMarker(out[i].Text) != "" {
+			imageIdx = append(imageIdx, i)
+		}
+	}
+	if len(imageIdx) == 0 {
+		return out
+	}
+	maxPerRefresh := 5
+	target := make([]int, 0, maxPerRefresh)
+	lastSeen := pr.lastImageID[channel]
+	for _, idx := range imageIdx {
+		if len(target) >= maxPerRefresh {
+			break
+		}
+		if out[idx].ID > lastSeen {
+			target = append(target, idx)
+		}
+	}
+	cursor := pr.imageCursor[channel]
+	if cursor < 0 {
+		cursor = 0
+	}
+	for len(target) < maxPerRefresh && cursor < len(imageIdx) {
+		idx := imageIdx[cursor]
+		cursor++
+		if out[idx].ID > lastSeen {
+			continue
+		}
+		target = append(target, idx)
+	}
+	pr.imageCursor[channel] = cursor
+	pr.lastImageID[channel] = out[imageIdx[0]].ID
+	for _, i := range target {
 		urlVal := extractImageURLMarker(out[i].Text)
 		if urlVal == "" {
 			continue
@@ -224,10 +271,17 @@ func (pr *PublicReader) embedImagesInMessages(ctx context.Context, msgs []protoc
 		}
 		out[i].Text = replaceImageURLWithInlineData(out[i].Text, mimeType, encoded, byteLen)
 	}
+	pr.enforceCacheLimit(2 << 30)
 	return out
 }
 
 func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mimeType, encoded string, byteLen int) {
+	key := hashKey(rawURL)
+	path := filepath.Join(pr.cacheDir, key+".webp")
+	if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
+		_ = os.Chtimes(path, time.Now(), time.Now())
+		return "image/webp", base64.StdEncoding.EncodeToString(b), len(b)
+	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return "", "", 0
@@ -254,18 +308,104 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 	if resp.ContentLength > maxBytes {
 		return "", "", 0
 	}
-	var buf bytes.Buffer
-	limited := io.LimitReader(resp.Body, maxBytes+1)
-	if _, err := io.Copy(&buf, limited); err != nil {
+	tmpPart := filepath.Join(pr.cacheDir, key+".part")
+	start := int64(0)
+	if st, err := os.Stat(tmpPart); err == nil {
+		start = st.Size()
+	}
+	var dst *os.File
+	if start > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		dst, err = os.OpenFile(tmpPart, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	} else {
+		dst, err = os.OpenFile(tmpPart, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	}
+	if err != nil {
 		return "", "", 0
 	}
-	if int64(buf.Len()) > maxBytes {
+	defer dst.Close()
+	limited := io.LimitReader(resp.Body, maxBytes-start+1)
+	if _, err := io.Copy(dst, limited); err != nil {
 		return "", "", 0
 	}
-	if buf.Len() == 0 {
+	b, err := os.ReadFile(tmpPart)
+	if err != nil || len(b) == 0 {
 		return "", "", 0
 	}
-	return ct, base64.StdEncoding.EncodeToString(buf.Bytes()), buf.Len()
+	if int64(len(b)) > maxBytes {
+		return "", "", 0
+	}
+	out := b
+	if compressed := pr.compressWebp(b); len(compressed) > 0 {
+		out = compressed
+		ct = "image/webp"
+	}
+	_ = os.WriteFile(path, out, 0600)
+	_ = os.Remove(tmpPart)
+	return ct, base64.StdEncoding.EncodeToString(out), len(out)
+}
+
+func hashKey(s string) string {
+	sum := sha1.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func (pr *PublicReader) compressWebp(src []byte) []byte {
+	in := filepath.Join(pr.cacheDir, "tmp-in-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	out := filepath.Join(pr.cacheDir, "tmp-out-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".webp")
+	if err := os.WriteFile(in, src, 0600); err != nil {
+		return nil
+	}
+	defer os.Remove(in)
+	cmd := exec.Command("cwebp", "-q", "50", "-resize", "0", "50", in, "-o", out)
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+	defer os.Remove(out)
+	b, err := os.ReadFile(out)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+func (pr *PublicReader) enforceCacheLimit(limit int64) {
+	pr.imageCacheLock.Lock()
+	defer pr.imageCacheLock.Unlock()
+	entries, err := os.ReadDir(pr.cacheDir)
+	if err != nil {
+		return
+	}
+	type item struct {
+		path string
+		size int64
+		mod  time.Time
+	}
+	var files []item
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".webp") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+		files = append(files, item{path: filepath.Join(pr.cacheDir, e.Name()), size: info.Size(), mod: info.ModTime()})
+	}
+	if total <= limit {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	for _, it := range files {
+		if total <= limit {
+			break
+		}
+		if os.Remove(it.path) == nil {
+			total -= it.size
+		}
+	}
 }
 
 func extractImageURLMarker(text string) string {
