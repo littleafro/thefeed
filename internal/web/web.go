@@ -113,6 +113,7 @@ type Server struct {
 	clients map[chan string]struct{}
 
 	stopRefresh chan struct{}
+	autoOnce    sync.Once
 
 	scanner *client.ResolverScanner
 }
@@ -217,6 +218,7 @@ func (s *Server) Run() error {
 			s.startCheckerThenRefresh()
 		}
 	}
+	s.startAutoRefreshLoop()
 
 	var handler http.Handler = mux
 	if s.password != "" {
@@ -389,9 +391,27 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		go s.refreshChannel(chNum)
 	} else {
-		go s.refreshMetadataOnly()
+		go s.refreshAllChannels()
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) startAutoRefreshLoop() {
+	s.autoOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				s.mu.RLock()
+				ready := s.fetcher != nil
+				s.mu.RUnlock()
+				if !ready {
+					continue
+				}
+				s.refreshAllChannels()
+			}
+		}()
+	})
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -1091,6 +1111,23 @@ func (s *Server) refreshChannel(channelNum int) {
 
 	s.addLog(fmt.Sprintf("Updated %s: %d messages", ch.Name, len(msgs)))
 	s.broadcast(fmt.Sprintf("event: update\ndata: {\"type\":\"messages\",\"channel\":%d}\n\n", channelNum))
+}
+
+func (s *Server) refreshAllChannels() {
+	s.mu.RLock()
+	checker := s.checker
+	ctx := s.fetcherCtx
+	s.mu.RUnlock()
+	if checker != nil && ctx != nil {
+		checker.CheckNow(ctx)
+	}
+	s.refreshMetadataOnly()
+	s.mu.RLock()
+	total := len(s.channels)
+	s.mu.RUnlock()
+	for i := 1; i <= total; i++ {
+		s.refreshChannel(i)
+	}
 }
 
 func (s *Server) loadConfig() (*Config, error) {

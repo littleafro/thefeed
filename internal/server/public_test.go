@@ -151,7 +151,7 @@ func TestPublicReaderEmbedImagesInMessages(t *testing.T) {
 	msgs := []protocol.Message{
 		{ID: 1, Text: protocol.MediaImage + "\ncaption\n[IMG_URL]" + imageURL},
 	}
-	out := pr.embedImagesInMessages(context.Background(), msgs)
+	out := pr.embedImagesInMessages(context.Background(), "test-channel", msgs)
 	if len(out) != 1 {
 		t.Fatalf("len(out) = %d, want 1", len(out))
 	}
