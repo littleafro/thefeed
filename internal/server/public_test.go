@@ -36,7 +36,7 @@ func TestParsePublicMessages(t *testing.T) {
 	if msgs[0].ID != 106 {
 		t.Fatalf("msgs[0].ID = %d, want 106", msgs[0].ID)
 	}
-	want := protocol.MediaImage + "\n" + "photo caption"
+	want := protocol.MediaImage + "\n" + "photo caption\n[IMG_URL]https://t.me/testchan/106"
 	if msgs[0].Text != want {
 		t.Fatalf("msgs[0].Text = %q, want %q", msgs[0].Text, want)
 	}
@@ -53,6 +53,14 @@ func TestParsePublicMessages(t *testing.T) {
 	}
 	if msgs[2].Text != "hello\nworld" {
 		t.Fatalf("msgs[2].Text = %q, want %q", msgs[2].Text, "hello\nworld")
+	}
+}
+
+func TestExtractURLFromInlineStyle(t *testing.T) {
+	got := extractURLFromInlineStyle(`background-image:url('https://cdn4.cdn-telegram.org/file.jpg')`)
+	want := "https://cdn4.cdn-telegram.org/file.jpg"
+	if got != want {
+		t.Fatalf("extractURLFromInlineStyle() = %q, want %q", got, want)
 	}
 }
 

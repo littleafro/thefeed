@@ -212,9 +212,11 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 		}
 		text := strings.TrimSpace(extractMessageText(findMessageBodyNode(n)))
 		mediaPrefix := ""
+		imageURL := ""
 		switch {
 		case findFirstByClass(n, "tgme_widget_message_photo_wrap") != nil:
 			mediaPrefix = protocol.MediaImage
+			imageURL = extractPhotoURL(n)
 		case findFirstByClass(n, "tgme_widget_message_video_player") != nil ||
 			findFirstByClass(n, "tgme_widget_message_roundvideo_player") != nil:
 			mediaPrefix = protocol.MediaVideo
@@ -237,6 +239,9 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 				text = mediaPrefix + "\n" + text
 			} else {
 				text = mediaPrefix
+			}
+			if imageURL != "" {
+				text += "\n[IMG_URL]" + imageURL
 			}
 		}
 		if text == "" {
@@ -262,6 +267,41 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 		msgs = append(msgs, protocol.Message{ID: msg.id, Timestamp: msg.timestamp, Text: msg.text})
 	}
 	return msgs, nil
+}
+
+func extractPhotoURL(n *html.Node) string {
+	photo := findFirstByClass(n, "tgme_widget_message_photo_wrap")
+	if photo == nil {
+		return ""
+	}
+	if style := attrValue(photo, "style"); style != "" {
+		if u := extractURLFromInlineStyle(style); u != "" {
+			return u
+		}
+	}
+	if href := strings.TrimSpace(attrValue(photo, "href")); strings.HasPrefix(href, "https://") {
+		return href
+	}
+	return ""
+}
+
+func extractURLFromInlineStyle(style string) string {
+	style = strings.TrimSpace(style)
+	start := strings.Index(style, "url(")
+	if start == -1 {
+		return ""
+	}
+	rest := style[start+4:]
+	end := strings.Index(rest, ")")
+	if end == -1 {
+		return ""
+	}
+	raw := strings.TrimSpace(rest[:end])
+	raw = strings.Trim(raw, `"'`)
+	if strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	return ""
 }
 
 func visitNodes(n *html.Node, fn func(*html.Node)) {
