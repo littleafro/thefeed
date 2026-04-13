@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	mrand "math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,8 +56,10 @@ type ProfileList struct {
 	Active   string    `json:"active"` // ID of active profile
 	Profiles []Profile `json:"profiles"`
 	// FontSize stores user's preferred font size (0 = default 14).
-	FontSize int  `json:"fontSize,omitempty"`
-	Debug    bool `json:"debug,omitempty"`
+	FontSize   int  `json:"fontSize,omitempty"`
+	Debug      bool `json:"debug,omitempty"`
+	LoadImages bool `json:"loadImages,omitempty"`
+	MaxImageKB int  `json:"maxImageKB,omitempty"`
 }
 
 // lastScanData is the on-disk structure for last_scan.json.
@@ -184,6 +188,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/api/profiles/switch", s.handleProfileSwitch)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/image-proxy", s.handleImageProxy)
 	mux.HandleFunc("/api/version-check", s.handleVersionCheck)
 	mux.HandleFunc("/api/cache/clear", s.handleClearCache)
 	mux.HandleFunc("/api/resolvers/apply-saved", s.handleApplySavedResolvers)
@@ -1385,12 +1390,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if pl == nil {
 			pl = &ProfileList{}
 		}
-		writeJSON(w, map[string]any{"fontSize": pl.FontSize, "debug": pl.Debug, "version": version.Version, "commit": version.Commit})
+		maxKB := pl.MaxImageKB
+		if maxKB <= 0 {
+			maxKB = 500
+		}
+		writeJSON(w, map[string]any{"fontSize": pl.FontSize, "debug": pl.Debug, "loadImages": pl.LoadImages, "maxImageKB": maxKB, "version": version.Version, "commit": version.Commit})
 
 	case http.MethodPost:
 		var req struct {
-			FontSize int  `json:"fontSize"`
-			Debug    bool `json:"debug"`
+			FontSize   int  `json:"fontSize"`
+			Debug      bool `json:"debug"`
+			LoadImages bool `json:"loadImages"`
+			MaxImageKB int  `json:"maxImageKB"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", 400)
@@ -1402,12 +1413,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.FontSize > 24 {
 			req.FontSize = 24
 		}
+		if req.MaxImageKB <= 0 {
+			req.MaxImageKB = 500
+		}
+		if req.MaxImageKB > 5*1024 {
+			req.MaxImageKB = 5 * 1024
+		}
 		pl, _ := s.loadProfiles()
 		if pl == nil {
 			pl = &ProfileList{}
 		}
 		pl.FontSize = req.FontSize
 		pl.Debug = req.Debug
+		pl.LoadImages = req.LoadImages
+		pl.MaxImageKB = req.MaxImageKB
 		if err := s.saveProfiles(pl); err != nil {
 			http.Error(w, fmt.Sprintf("save: %v", err), 500)
 			return
@@ -1425,6 +1444,70 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if rawURL == "" {
+		http.Error(w, "missing url", 400)
+		return
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		http.Error(w, "invalid url", 400)
+		return
+	}
+	limitKB := 500
+	if q := strings.TrimSpace(r.URL.Query().Get("maxKB")); q != "" {
+		if n, convErr := strconv.Atoi(q); convErr == nil && n > 0 {
+			limitKB = n
+		}
+	}
+	if limitKB > 5*1024 {
+		limitKB = 5 * 1024
+	}
+	maxBytes := int64(limitKB) * 1024
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		http.Error(w, "bad request", 400)
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0)")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "fetch failed", 502)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "fetch failed", 502)
+		return
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
+		http.Error(w, "not an image", 415)
+		return
+	}
+	if cl := resp.ContentLength; cl > maxBytes {
+		http.Error(w, "image too large", 413)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		http.Error(w, "read failed", 502)
+		return
+	}
+	if int64(len(data)) > maxBytes {
+		http.Error(w, "image too large", 413)
+		return
+	}
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Write(data)
 }
 
 func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
