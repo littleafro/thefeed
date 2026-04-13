@@ -3,6 +3,12 @@ name: Build
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional tag/version string used for ldflags version metadata (e.g. v1.2.3)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -40,8 +46,6 @@ jobs:
             goarch: arm64
           - goos: windows
             goarch: amd64
-          - goos: android
-            goarch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -53,13 +57,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
       - name: Build Server
-        if: matrix.goos != 'android'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          VERSION=${GITHUB_REF_NAME:-dev}
+          VERSION=${{ github.event.inputs.release_tag || github.ref_name || 'dev' }}
           COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           LDFLAGS="-s -w -X github.com/sartoopjj/thefeed/internal/version.Version=${VERSION} -X github.com/sartoopjj/thefeed/internal/version.Commit=${COMMIT} -X github.com/sartoopjj/thefeed/internal/version.Date=${DATE}"
@@ -73,7 +76,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          VERSION=${GITHUB_REF_NAME:-dev}
+          VERSION=${{ github.event.inputs.release_tag || github.ref_name || 'dev' }}
           COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           LDFLAGS="-s -w -X github.com/sartoopjj/thefeed/internal/version.Version=${VERSION} -X github.com/sartoopjj/thefeed/internal/version.Commit=${COMMIT} -X github.com/sartoopjj/thefeed/internal/version.Date=${DATE}"
@@ -96,66 +99,8 @@ jobs:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: build/
 
-  android-apk:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: Stage Android client binary as JNI library
-        run: |
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a
-          test -f artifacts/thefeed-client-android-arm64
-
-      - name: Decode signing keystore
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
-            echo "Keystore decoded successfully"
-          else
-            echo "No KEYSTORE_BASE64 secret set — will use debug signing"
-          fi
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build Android APK
-        working-directory: android
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          gradle wrapper --gradle-version 8.10.2
-          if [ -f app/keystore.jks ]; then BT=release; TASK=assembleRelease; else BT=debug; TASK=assembleDebug; fi
-
-          cp ../artifacts/thefeed-client-android-arm64 app/src/main/jniLibs/arm64-v8a/libthefeed.so
-          ./gradlew --no-daemon clean $TASK
-          APK=$(find app/build/outputs/apk/$BT -name "*.apk" | head -1)
-          cp "$APK" ../artifacts/thefeed-android-arm64.apk
-
-      - name: Upload Android APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: thefeed-android-apk
-          path: artifacts/thefeed-android-arm64.apk
-
   release:
-    needs: [build, android-apk]
+    needs: [build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

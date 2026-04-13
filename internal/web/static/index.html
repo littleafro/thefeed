@@ -1315,9 +1315,9 @@
           channels yet</div>
       </div>
       <div class="sidebar-footer">
-        TELEGRAM: <a href="https://t.me/networkti" target="_blank">@networkti</a>
+        By <a href="https://t.me/networkti" target="_blank">@networkti</a>, Edited by <a href="https://t.me/littleafro" target="_blank">@littleafro</a>
         &middot;
-        <a href="https://github.com/sartoopjj/thefeed" target="_blank">GitHub</a>
+        <a href="https://github.com/littleafro/thefeed" target="_blank">GitHub</a>
       </div>
     </div>
 
@@ -1388,6 +1388,16 @@
           <input type="checkbox" id="cfgDebug">
           <label for="cfgDebug" data-i18n="debug_mode">Debug mode</label>
         </div>
+      </div>
+      <div class="form-group">
+        <div class="row">
+          <input type="checkbox" id="cfgLoadImages">
+          <label for="cfgLoadImages" data-i18n="load_images">Load images</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="cfgMaxImageKB" data-i18n="max_image_kb">Max image size (KB)</label>
+        <input id="cfgMaxImageKB" type="number" min="50" max="5120" step="50" value="500">
       </div>
       <div class="form-group">
         <label data-i18n="language">Language</label>
@@ -1625,7 +1635,7 @@
         no_messages_hint: 'برنامه در حال دریافت پیام‌ها است. لطفاً چند لحظه صبر کنید...',
         write_message: 'پیام بنویسید...', configure_server: 'برای شروع یک سرور راه‌اندازی کنید',
         set_up: 'راه‌اندازی', switching: 'در حال تغییر پروفایل...',
-        font_size: 'اندازه قلم', debug_mode: 'حالت دیباگ', language: 'زبان',
+        font_size: 'اندازه قلم', debug_mode: 'حالت دیباگ', load_images: 'بارگذاری تصاویر', max_image_kb: 'حداکثر حجم تصویر (KB)', language: 'زبان',
         next_fetch_info: 'زمان باقی‌مانده تا دریافت بعدی محتوا توسط سرور',
         no_profiles: 'هنوز پروفایلی وجود ندارد', add_profile: '+ پروفایل جدید',
         import_uri_label: 'وارد کردن پیوند (URI)', import_uri_ph: 'thefeed://...', import: 'وارد کردن', close: 'بستن',
@@ -1706,7 +1716,7 @@
         no_messages_hint: 'The app is trying to fetch messages. Please wait a moment...',
         write_message: 'Write a message...', configure_server: 'Configure a server to start reading',
         set_up: 'Set Up', switching: 'Switching profile...',
-        font_size: 'Font Size', debug_mode: 'Debug mode', language: 'Language',
+        font_size: 'Font Size', debug_mode: 'Debug mode', load_images: 'Load images', max_image_kb: 'Max image size (KB)', language: 'Language',
         next_fetch_info: 'Time until the server next fetches fresh channel content',
         no_profiles: 'No profiles yet', add_profile: '+ Add Profile',
         import_uri_label: 'Import URI', import_uri_ph: 'thefeed://...', import: 'Import', close: 'Close',
@@ -1799,6 +1809,7 @@
     var selectedChannel = 0, channels = [], eventSource = null, autoRefreshTimer = null, telegramLoggedIn = false, logVisible = false;
     var serverNextFetch = 0, nextFetchInterval = null, previousMsgIDs = {}, currentMsgTexts = [];
     var appVersion = '', latestVersion = '';
+    var loadImagesEnabled = false, maxImageKB = 500;
     var profiles = null, activeProfileId = '', editingProfileId = null, resolverScanHint = '', resolverScanHealthy = 0, resolverScanDone = 0, resolverScanTotal = 0;
 
     // ===== MOBILE NAV =====
@@ -1842,6 +1853,10 @@
           document.getElementById('fontSizeVal').textContent = s.fontSize;
         }
         if (s.debug) document.getElementById('cfgDebug').checked = true;
+        loadImagesEnabled = !!s.loadImages;
+        maxImageKB = parseInt(s.maxImageKB || 500, 10) || 500;
+        document.getElementById('cfgLoadImages').checked = loadImagesEnabled;
+        document.getElementById('cfgMaxImageKB').value = maxImageKB;
         if (s.version) { appVersion = s.version; renderAppVersion(s.version, s.commit); }
         renderLatestVersion();
       } catch (e) { }
@@ -1896,7 +1911,13 @@
     async function saveSettings() {
       var fs = parseInt(document.getElementById('fontSizeSlider').value) || 14;
       var dbg = document.getElementById('cfgDebug').checked;
-      try { await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fontSize: fs, debug: dbg }) }) } catch (e) { }
+      var li = document.getElementById('cfgLoadImages').checked;
+      var mk = parseInt(document.getElementById('cfgMaxImageKB').value, 10) || 500;
+      if (mk < 50) mk = 50;
+      if (mk > 5120) mk = 5120;
+      loadImagesEnabled = li;
+      maxImageKB = mk;
+      try { await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fontSize: fs, debug: dbg, loadImages: li, maxImageKB: mk }) }) } catch (e) { }
       closeSettings();
     }
     async function checkLatestVersion() {
@@ -2434,6 +2455,29 @@
         var timeStr = ts.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
         var text = msg.Text || msg.text || '';
         currentMsgTexts.push(text);
+        var imageURL = '', imageMime = '', imageB64 = '', imageSize = 0;
+        var markerIdx = text.indexOf('\n[IMG_URL]');
+        if (markerIdx !== -1) {
+          imageURL = text.substring(markerIdx + '\n[IMG_URL]'.length).trim();
+          text = text.substring(0, markerIdx);
+        }
+        var mimeIdx = text.indexOf('\n[IMG_MIME]');
+        if (mimeIdx !== -1) {
+          var afterMime = text.substring(mimeIdx + '\n[IMG_MIME]'.length);
+          var mimeLineEnd = afterMime.indexOf('\n');
+          imageMime = (mimeLineEnd === -1 ? afterMime : afterMime.substring(0, mimeLineEnd)).trim();
+          text = text.substring(0, mimeIdx);
+        }
+        var sizeIdx = (mimeIdx !== -1 ? (msg.Text || msg.text || '').indexOf('\n[IMG_SIZE]') : -1);
+        if (sizeIdx !== -1) {
+          var afterSize = (msg.Text || msg.text || '').substring(sizeIdx + '\n[IMG_SIZE]'.length);
+          var sizeLineEnd = afterSize.indexOf('\n');
+          imageSize = parseInt((sizeLineEnd === -1 ? afterSize : afterSize.substring(0, sizeLineEnd)).trim(), 10) || 0;
+        }
+        var b64Idx = (msg.Text || msg.text || '').indexOf('\n[IMG_B64]');
+        if (b64Idx !== -1) {
+          imageB64 = (msg.Text || msg.text || '').substring(b64Idx + '\n[IMG_B64]'.length).trim();
+        }
         var mediaHtml = '', textHtml = esc(text);
         var mediaTypes = ['[IMAGE]', '[VIDEO]', '[FILE]', '[AUDIO]', '[STICKER]', '[GIF]', '[POLL]', '[CONTACT]', '[LOCATION]'];
         for (var m = 0; m < mediaTypes.length; m++) {
@@ -2441,6 +2485,11 @@
             mediaHtml = '<div class="media-tag">' + mediaTypes[m] + '</div>';
             textHtml = esc(text.substring(mediaTypes[m].length).replace(/^\n/, '')); break
           }
+        }
+        if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageB64 && imageMime.indexOf('image/') === 0 && (!imageSize || imageSize <= maxImageKB * 1024)) {
+          mediaHtml += '<div style="margin:8px 0"><img loading="lazy" src="data:' + esc(imageMime) + ';base64,' + imageB64 + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" /></div>';
+        } else if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageURL.indexOf('https://') === 0) {
+          mediaHtml += '<div class="media-tag" style="margin-top:6px">Image available on source URL</div>';
         }
         html += '<div class="msg' + (isPersian(text) ? ' rtl-msg' : '') + '" dir="auto">' + mediaHtml + textHtml + '<div class="msg-meta"><button class="msg-copy-btn" onclick="copyMsg(' + i + ')" title="' + t('copy') + '">&#128203;</button><span>#' + id + '</span><span>' + timeStr + '</span></div></div>';
       }

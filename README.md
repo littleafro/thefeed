@@ -82,6 +82,20 @@ Uninstall: `curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/sc
 
 ## Manual Setup
 
+### CI: Trigger Build Workflow Manually
+
+You can run the **Build** GitHub Actions workflow without pushing a tag:
+
+1. Open your repository on GitHub.
+2. Go to **Actions** → **Build**.
+3. Click **Run workflow**.
+4. (Optional) Fill `release_tag` (example: `v1.2.3`) to embed that version into binaries.
+5. Click **Run workflow**.
+
+Notes:
+- Manual runs execute test/build jobs and upload artifacts to the workflow run.
+- GitHub Releases are still created **only** for tag-triggered runs (`refs/tags/v*`).
+
 ### Prerequisites
 
 - Go 1.26+
@@ -117,7 +131,7 @@ make build-server
 
 All data files (session, channels, x accounts) are stored in the `--data-dir` directory (default: `./data`).
 
-Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `THEFEED_MSG_LIMIT`, `THEFEED_ALLOW_MANAGE` (set to `0` to force-disable even if the flag is baked into the service), `THEFEED_X_RSS_INSTANCES`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `TELEGRAM_PASSWORD`
+Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `THEFEED_MSG_LIMIT`, `THEFEED_PUBLIC_IMAGE_KB`, `THEFEED_ALLOW_MANAGE` (set to `0` to force-disable even if the flag is baked into the service), `THEFEED_X_RSS_INSTANCES`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, `TELEGRAM_PASSWORD`
 
 #### Server Flags
 
@@ -138,6 +152,7 @@ Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `THEFEED_MSG_LIMIT`, `TH
 | `--listen` | `:5300` | DNS listen address |
 | `--padding` | `32` | Max random padding bytes (0=disabled) |
 | `--msg-limit` | `15` | Maximum messages to fetch per Telegram channel |
+| `--public-image-kb` | `500` | Max public image size (KB) to inline into DNS-delivered message payloads (`0` disables image embedding) |
 | `--allow-manage` | `false` | Allow remote send/channel management (default: disabled) |
 | `--version` | | Show version and exit |
 
@@ -235,6 +250,7 @@ The browser-based UI has:
 - **New message badges**: visual indicators for channels with new messages
 - **Next-fetch timer**: countdown to next automatic refresh
 - **Media detection**: `[IMAGE]`, `[VIDEO]`, `[DOCUMENT]` tag highlighting
+- **Inline image transport over DNS**: public Telegram image posts are embedded in DNS-delivered message payloads (subject to server `--public-image-kb` cap), then rendered in the client when **Load images** is enabled
 - **Log panel** (bottom): live DNS query log
 - **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, concurrent requests (scatter), timeout, debug mode
 - **Per-profile cache**: 1-hour browser cache so data is visible instantly on reopen

@@ -1,6 +1,10 @@
 package server
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sartoopjj/thefeed/internal/protocol"
@@ -36,7 +40,7 @@ func TestParsePublicMessages(t *testing.T) {
 	if msgs[0].ID != 106 {
 		t.Fatalf("msgs[0].ID = %d, want 106", msgs[0].ID)
 	}
-	want := protocol.MediaImage + "\n" + "photo caption"
+	want := protocol.MediaImage + "\n" + "photo caption\n[IMG_URL]https://t.me/testchan/106"
 	if msgs[0].Text != want {
 		t.Fatalf("msgs[0].Text = %q, want %q", msgs[0].Text, want)
 	}
@@ -53,6 +57,14 @@ func TestParsePublicMessages(t *testing.T) {
 	}
 	if msgs[2].Text != "hello\nworld" {
 		t.Fatalf("msgs[2].Text = %q, want %q", msgs[2].Text, "hello\nworld")
+	}
+}
+
+func TestExtractURLFromInlineStyle(t *testing.T) {
+	got := extractURLFromInlineStyle(`background-image:url('https://cdn4.cdn-telegram.org/file.jpg')`)
+	want := "https://cdn4.cdn-telegram.org/file.jpg"
+	if got != want {
+		t.Fatalf("extractURLFromInlineStyle() = %q, want %q", got, want)
 	}
 }
 
@@ -122,5 +134,31 @@ func TestParsePublicMessagesReplyPreviewUsesMainBody(t *testing.T) {
 	}
 	if msgs[0].Text != "this is the real new post" {
 		t.Fatalf("msgs[0].Text = %q, want %q", msgs[0].Text, "this is the real new post")
+	}
+}
+
+func TestPublicReaderEmbedImagesInMessages(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(imgBytes)
+	}))
+	defer srv.Close()
+	imageURL := srv.URL
+
+	pr := NewPublicReader(nil, nil, 15, 500, 1)
+	pr.client = srv.Client()
+	msgs := []protocol.Message{
+		{ID: 1, Text: protocol.MediaImage + "\ncaption\n[IMG_URL]" + imageURL},
+	}
+	out := pr.embedImagesInMessages(context.Background(), msgs)
+	if len(out) != 1 {
+		t.Fatalf("len(out) = %d, want 1", len(out))
+	}
+	if strings.Contains(out[0].Text, "[IMG_URL]") {
+		t.Fatalf("expected IMG_URL marker to be replaced, got %q", out[0].Text)
+	}
+	if !strings.Contains(out[0].Text, "\n[IMG_MIME]image/png\n[IMG_SIZE]4\n[IMG_B64]") {
+		t.Fatalf("missing inline image markers, got %q", out[0].Text)
 	}
 }

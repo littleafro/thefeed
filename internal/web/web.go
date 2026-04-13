@@ -54,8 +54,10 @@ type ProfileList struct {
 	Active   string    `json:"active"` // ID of active profile
 	Profiles []Profile `json:"profiles"`
 	// FontSize stores user's preferred font size (0 = default 14).
-	FontSize int  `json:"fontSize,omitempty"`
-	Debug    bool `json:"debug,omitempty"`
+	FontSize   int  `json:"fontSize,omitempty"`
+	Debug      bool `json:"debug,omitempty"`
+	LoadImages bool `json:"loadImages,omitempty"`
+	MaxImageKB int  `json:"maxImageKB,omitempty"`
 }
 
 // lastScanData is the on-disk structure for last_scan.json.
@@ -1385,12 +1387,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if pl == nil {
 			pl = &ProfileList{}
 		}
-		writeJSON(w, map[string]any{"fontSize": pl.FontSize, "debug": pl.Debug, "version": version.Version, "commit": version.Commit})
+		maxKB := pl.MaxImageKB
+		if maxKB <= 0 {
+			maxKB = 500
+		}
+		writeJSON(w, map[string]any{"fontSize": pl.FontSize, "debug": pl.Debug, "loadImages": pl.LoadImages, "maxImageKB": maxKB, "version": version.Version, "commit": version.Commit})
 
 	case http.MethodPost:
 		var req struct {
-			FontSize int  `json:"fontSize"`
-			Debug    bool `json:"debug"`
+			FontSize   int  `json:"fontSize"`
+			Debug      bool `json:"debug"`
+			LoadImages bool `json:"loadImages"`
+			MaxImageKB int  `json:"maxImageKB"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", 400)
@@ -1402,12 +1410,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.FontSize > 24 {
 			req.FontSize = 24
 		}
+		if req.MaxImageKB <= 0 {
+			req.MaxImageKB = 500
+		}
+		if req.MaxImageKB > 5*1024 {
+			req.MaxImageKB = 5 * 1024
+		}
 		pl, _ := s.loadProfiles()
 		if pl == nil {
 			pl = &ProfileList{}
 		}
 		pl.FontSize = req.FontSize
 		pl.Debug = req.Debug
+		pl.LoadImages = req.LoadImages
+		pl.MaxImageKB = req.MaxImageKB
 		if err := s.saveProfiles(pl); err != nil {
 			http.Error(w, fmt.Sprintf("save: %v", err), 500)
 			return
