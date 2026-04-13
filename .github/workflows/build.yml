@@ -161,7 +161,7 @@ jobs:
           path: artifacts/thefeed-android-arm64.apk
 
   release:
-    needs: [build, android-apk]
+    needs: [build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
