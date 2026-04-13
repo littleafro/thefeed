@@ -82,6 +82,20 @@ Uninstall: `curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/sc
 
 ## Manual Setup
 
+### CI: Trigger Build Workflow Manually
+
+You can run the **Build** GitHub Actions workflow without pushing a tag:
+
+1. Open your repository on GitHub.
+2. Go to **Actions** → **Build**.
+3. Click **Run workflow**.
+4. (Optional) Fill `release_tag` (example: `v1.2.3`) to embed that version into binaries.
+5. Click **Run workflow**.
+
+Notes:
+- Manual runs execute test/build jobs and upload artifacts to the workflow run.
+- GitHub Releases are still created **only** for tag-triggered runs (`refs/tags/v*`).
+
 ### Prerequisites
 
 - Go 1.26+
