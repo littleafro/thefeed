@@ -46,6 +46,7 @@ type PublicReader struct {
 
 	imageCursor    map[string]int
 	lastImageID    map[string]uint32
+	failedImageIDs map[string]map[uint32]struct{}
 	imageCacheLock sync.Mutex
 }
 
@@ -73,13 +74,14 @@ func NewPublicReader(channelUsernames []string, feed *Feed, msgLimit int, imageM
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL:     "https://t.me/s",
-		cache:       make(map[string]cachedMessages),
-		cacheTTL:    10 * time.Minute,
-		refreshCh:   make(chan struct{}, 1),
-		cacheDir:    filepath.Join(os.TempDir(), "thefeed-image-cache"),
-		imageCursor: make(map[string]int),
-		lastImageID: make(map[string]uint32),
+		baseURL:        "https://t.me/s",
+		cache:          make(map[string]cachedMessages),
+		cacheTTL:       10 * time.Minute,
+		refreshCh:      make(chan struct{}, 1),
+		cacheDir:       filepath.Join(os.TempDir(), "thefeed-image-cache"),
+		imageCursor:    make(map[string]int),
+		lastImageID:    make(map[string]uint32),
+		failedImageIDs: make(map[string]map[uint32]struct{}),
 	}
 }
 
@@ -238,27 +240,56 @@ func (pr *PublicReader) embedImagesInMessages(ctx context.Context, channel strin
 	maxPerRefresh := 5
 	target := make([]int, 0, maxPerRefresh)
 	lastSeen := pr.lastImageID[channel]
+	failed := pr.failedImageIDs[channel]
+	if failed == nil {
+		failed = make(map[uint32]struct{})
+		pr.failedImageIDs[channel] = failed
+	}
+	added := make(map[int]struct{}, maxPerRefresh)
+	// 1) Retry previously failed images first.
 	for _, idx := range imageIdx {
 		if len(target) >= maxPerRefresh {
 			break
 		}
+		if _, ok := failed[out[idx].ID]; !ok {
+			continue
+		}
+		target = append(target, idx)
+		added[idx] = struct{}{}
+	}
+	// 2) Prioritize new images.
+	for _, idx := range imageIdx {
+		if len(target) >= maxPerRefresh {
+			break
+		}
+		if _, ok := added[idx]; ok {
+			continue
+		}
 		if out[idx].ID > lastSeen {
 			target = append(target, idx)
+			added[idx] = struct{}{}
 		}
 	}
+	// 3) Continue from older-image cursor to fill remaining slots.
 	cursor := pr.imageCursor[channel]
 	if cursor < 0 {
 		cursor = 0
 	}
+	nextCursor := cursor
 	for len(target) < maxPerRefresh && cursor < len(imageIdx) {
 		idx := imageIdx[cursor]
 		cursor++
+		nextCursor = cursor
+		if _, ok := added[idx]; ok {
+			continue
+		}
 		if out[idx].ID > lastSeen {
 			continue
 		}
 		target = append(target, idx)
+		added[idx] = struct{}{}
 	}
-	pr.imageCursor[channel] = cursor
+	pr.imageCursor[channel] = nextCursor
 	pr.lastImageID[channel] = out[imageIdx[0]].ID
 	for _, i := range target {
 		urlVal := extractImageURLMarker(out[i].Text)
@@ -267,8 +298,10 @@ func (pr *PublicReader) embedImagesInMessages(ctx context.Context, channel strin
 		}
 		mimeType, encoded, byteLen := pr.fetchInlineImage(ctx, urlVal)
 		if encoded == "" {
+			failed[out[i].ID] = struct{}{}
 			continue
 		}
+		delete(failed, out[i].ID)
 		out[i].Text = replaceImageURLWithInlineData(out[i].Text, mimeType, encoded, byteLen)
 	}
 	pr.enforceCacheLimit(2 << 30)
@@ -292,13 +325,21 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 		return "", "", 0
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0; +https://github.com/sartoopjj/thefeed)")
+	tmpPart := filepath.Join(pr.cacheDir, key+".part")
+	start := int64(0)
+	if st, err := os.Stat(tmpPart); err == nil {
+		start = st.Size()
+		if start > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		}
+	}
 
 	resp, err := pr.client.Do(req)
 	if err != nil {
 		return "", "", 0
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return "", "", 0
 	}
 	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
@@ -308,14 +349,13 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 	if resp.ContentLength > maxBytes {
 		return "", "", 0
 	}
-	tmpPart := filepath.Join(pr.cacheDir, key+".part")
-	start := int64(0)
-	if st, err := os.Stat(tmpPart); err == nil {
-		start = st.Size()
+	if start > 0 && resp.StatusCode != http.StatusPartialContent {
+		// Upstream ignored Range: restart from scratch to avoid corrupt "complete" files.
+		start = 0
+		_ = os.Remove(tmpPart)
 	}
 	var dst *os.File
 	if start > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
 		dst, err = os.OpenFile(tmpPart, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	} else {
 		dst, err = os.OpenFile(tmpPart, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
@@ -335,11 +375,13 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 	if int64(len(b)) > maxBytes {
 		return "", "", 0
 	}
-	out := b
-	if compressed := pr.compressWebp(b); len(compressed) > 0 {
-		out = compressed
-		ct = "image/webp"
+	compressed := pr.compressWebp(b)
+	if len(compressed) == 0 {
+		// To guarantee compressed-only delivery, skip embedding when compression fails.
+		return "", "", 0
 	}
+	out := compressed
+	ct = "image/webp"
 	_ = os.WriteFile(path, out, 0600)
 	_ = os.Remove(tmpPart)
 	return ct, base64.StdEncoding.EncodeToString(out), len(out)

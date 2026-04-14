@@ -83,6 +83,7 @@ type Server struct {
 	telegramLoggedIn bool
 	nextFetch        uint32
 	latestVersion    string
+	lastRefreshAt    int64
 	lastMsgIDs       map[int]uint32 // last seen message IDs per channel
 	lastHashes       map[int]uint32 // last seen content hashes per channel
 
@@ -273,6 +274,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status["telegramLoggedIn"] = s.telegramLoggedIn
 		status["nextFetch"] = s.nextFetch
 		status["latestVersion"] = s.latestVersion
+		status["lastRefreshAt"] = s.lastRefreshAt
 		// Include last resolver scan if recent (<24 h) so the frontend can offer a quick-start.
 		if ls := s.loadLastScan(); ls != nil {
 			status["lastScan"] = map[string]any{
@@ -920,6 +922,7 @@ func (s *Server) refreshMetadataOnly() {
 	s.telegramLoggedIn = meta.TelegramLoggedIn
 	s.nextFetch = meta.NextFetch
 	s.metaFetchedAt = time.Now()
+	s.lastRefreshAt = time.Now().Unix()
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -1098,6 +1101,7 @@ func (s *Server) refreshChannel(channelNum int) {
 		s.lastMsgIDs[channelNum] = ch.LastMsgID
 		s.lastHashes[channelNum] = ch.ContentHash
 	}
+	s.lastRefreshAt = time.Now().Unix()
 	s.mu.Unlock()
 
 	if cache != nil {
