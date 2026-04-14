@@ -1332,8 +1332,6 @@
           <span class="next-fetch-label" id="nextFetchTimer"></span><span class="next-fetch-info" id="nextFetchInfoBtn"
             style="display:none" data-i18n-title="next_fetch_info" title="" onclick="showToast(t('next_fetch_info'))"
             tabindex="0">ⓘ</span>
-          <button class="icon-btn" id="refreshBtn" onclick="doRefreshUI()" title="Refresh"
-            style="width:40px;height:40px;font-size:20px">&#8635;</button>
         </div>
       </div>
       <div class="messages" id="messages">
@@ -1636,7 +1634,7 @@
         write_message: 'پیام بنویسید...', configure_server: 'برای شروع یک سرور راه‌اندازی کنید',
         set_up: 'راه‌اندازی', switching: 'در حال تغییر پروفایل...',
         font_size: 'اندازه قلم', debug_mode: 'حالت دیباگ', load_images: 'بارگذاری تصاویر', max_image_kb: 'حداکثر حجم تصویر (KB)', language: 'زبان',
-        next_fetch_info: 'زمان باقی‌مانده تا دریافت بعدی محتوا توسط سرور',
+        next_fetch_info: 'زمان آخرین بروزرسانی موفق',
         no_profiles: 'هنوز پروفایلی وجود ندارد', add_profile: '+ پروفایل جدید',
         import_uri_label: 'وارد کردن پیوند (URI)', import_uri_ph: 'thefeed://...', import: 'وارد کردن', close: 'بستن',
         invalid_uri: 'پیوند باید با thefeed:// شروع شود', uri_missing: 'پیوند فاقد دامنه یا رمز است',
@@ -1717,7 +1715,7 @@
         write_message: 'Write a message...', configure_server: 'Configure a server to start reading',
         set_up: 'Set Up', switching: 'Switching profile...',
         font_size: 'Font Size', debug_mode: 'Debug mode', load_images: 'Load images', max_image_kb: 'Max image size (KB)', language: 'Language',
-        next_fetch_info: 'Time until the server next fetches fresh channel content',
+        next_fetch_info: 'Exact time of the last successful refresh',
         no_profiles: 'No profiles yet', add_profile: '+ Add Profile',
         import_uri_label: 'Import URI', import_uri_ph: 'thefeed://...', import: 'Import', close: 'Close',
         invalid_uri: 'URI must start with thefeed://', uri_missing: 'URI missing domain or passphrase',
@@ -1807,7 +1805,8 @@
 
     // ===== STATE =====
     var selectedChannel = 0, channels = [], eventSource = null, autoRefreshTimer = null, telegramLoggedIn = false, logVisible = false;
-    var serverNextFetch = 0, nextFetchInterval = null, previousMsgIDs = {}, currentMsgTexts = [];
+    var lastRefreshAt = 0, previousMsgIDs = {}, currentMsgTexts = [];
+    var nextAutoRefreshAt = 0, nextAutoRefreshInterval = null;
     var appVersion = '', latestVersion = '';
     var loadImagesEnabled = false, maxImageKB = 500;
     var profiles = null, activeProfileId = '', editingProfileId = null, resolverScanHint = '', resolverScanHealthy = 0, resolverScanDone = 0, resolverScanTotal = 0;
@@ -1832,7 +1831,7 @@
         cleanupOldLocalStorageKeys();
         checkAndShowSavedResolversPrompt(st);
         telegramLoggedIn = !!st.telegramLoggedIn;
-        serverNextFetch = st.nextFetch || 0;
+        lastRefreshAt = st.lastRefreshAt || 0;
         latestVersion = st.latestVersion || '';
         renderLatestVersion();
         updateNextFetchDisplay();
@@ -2288,7 +2287,7 @@
         var initBar = document.getElementById('prog-init'); if (initBar) initBar.remove();
         var sr = await fetch('/api/status'); var st = await sr.json();
         telegramLoggedIn = !!st.telegramLoggedIn;
-        if (st.nextFetch) { serverNextFetch = st.nextFetch; updateNextFetchDisplay() }
+        if (st.lastRefreshAt) { lastRefreshAt = st.lastRefreshAt; updateNextFetchDisplay() }
         if (st.latestVersion) { latestVersion = st.latestVersion; renderLatestVersion() }
       } catch (e) { }
     }
@@ -2366,7 +2365,6 @@
         var num3 = k + 1, lid = channels[k].LastMsgID || channels[k].lastMsgID || 0;
         if (previousMsgIDs[num3] > 0 && lid > previousMsgIDs[num3] && num3 !== selectedChannel) { hasNew = true; break }
       }
-      document.getElementById('refreshBtn').classList.toggle('refresh-has-new', hasNew);
     }
 
     async function selectChannel(num) {
@@ -2678,60 +2676,42 @@
       p.innerHTML = '<div class="progress-item" id="prog-init" data-last-update="' + Date.now() + '"><button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label">' + t('loading') + '</div><div class="progress-bar"><div class="progress-fill" style="width:30%;animation:prog-pulse 1.5s ease-in-out infinite"></div></div></div>';
       if (window.innerWidth <= 768) { openChat(); openLog(); }
     }
-    function startAutoRefresh() { if (autoRefreshTimer) return; autoRefreshTimer = setInterval(function () { if (selectedChannel > 0) doRefresh(true) }, 600000) }
+    function startAutoRefresh() {
+      if (autoRefreshTimer) return;
+      function resetCountdown() {
+        nextAutoRefreshAt = Math.floor(Date.now() / 1000) + 300;
+        updateNextFetchDisplay();
+      }
+      resetCountdown();
+      autoRefreshTimer = setInterval(function () {
+        doRefresh(true);
+        resetCountdown();
+      }, 300000);
+      if (nextAutoRefreshInterval) clearInterval(nextAutoRefreshInterval);
+      nextAutoRefreshInterval = setInterval(updateNextFetchDisplay, 1000);
+    }
     function updateNextFetchDisplay() {
-      if (nextFetchInterval) clearInterval(nextFetchInterval);
       var el = document.getElementById('nextFetchTimer');
       var info = document.getElementById('nextFetchInfoBtn');
-      if (!serverNextFetch) { el.textContent = ''; if (info) info.style.display = 'none'; return }
+      if (!lastRefreshAt) { el.textContent = ''; if (info) info.style.display = 'none'; return }
       if (info) { info.style.display = ''; info.title = t('next_fetch_info') }
-      var autoRefreshed = false;
-      function tick() {
-        var now = Math.floor(Date.now() / 1000), d = serverNextFetch - now;
-        if (d <= 0) {
-          el.textContent = '';
-          if (!autoRefreshed) { autoRefreshed = true; setTimeout(function () { doAutoRefreshAfterCountdown() }, 3000) }
-          return
-        }
-        var m = Math.floor(d / 60), s = d % 60; el.textContent = m + ':' + (s < 10 ? '0' : '') + s
+      var dt = new Date(lastRefreshAt * 1000);
+      var locale = (lang === 'fa' ? 'fa-IR' : 'en-US');
+      var lastTxt = dt.toLocaleString(locale, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var countdown = '';
+      if (nextAutoRefreshAt > 0) {
+        var left = Math.max(0, nextAutoRefreshAt - Math.floor(Date.now() / 1000));
+        var mm = Math.floor(left / 60), ss = left % 60;
+        countdown = ' | ' + mm + ':' + (ss < 10 ? '0' : '') + ss;
       }
-      tick(); nextFetchInterval = setInterval(tick, 1000);
-    }
-    async function doRefreshUI() {
-      var btn = document.getElementById('refreshBtn');
-      btn.style.animation = 'spin .8s linear';
-      showToast(t('refreshing'));
-      await doRefresh(false);
-      setTimeout(function () { btn.style.animation = '' }, 800);
+      el.textContent = lastTxt + countdown;
     }
     async function doRefresh(quiet) {
       try {
         var url = '/api/refresh';
-        if (selectedChannel > 0) url += '?channel=' + selectedChannel;
-        if (quiet) url += (url.includes('?') ? '&' : '?') + 'quiet=1';
+        if (quiet) url += '?quiet=1';
         await fetch(url, { method: 'POST' });
         if (!quiet && selectedChannel > 0) setTimeout(function () { loadChannels(); loadMessages(selectedChannel) }, 3000);
-      } catch (e) { }
-    }
-
-    async function doAutoRefreshAfterCountdown() {
-      // Auto-triggered when server fetch countdown reaches 0
-      // Clear metadata cache so we get fresh data
-      try { localStorage.removeItem(cacheKey()) } catch (e) { }
-      try {
-        // Reload channels (this also fetches /api/status and updates the timer)
-        await loadChannels();
-        // If we have a selected channel, reload its messages too
-        if (selectedChannel > 0) await loadMessages(selectedChannel);
-        // If the timer still didn't show (server may not have refreshed yet), retry after a delay
-        if (!serverNextFetch || serverNextFetch <= Math.floor(Date.now() / 1000)) {
-          setTimeout(async function () {
-            try {
-              var sr = await fetch('/api/status'); var st = await sr.json();
-              if (st.nextFetch && st.nextFetch > Math.floor(Date.now() / 1000)) { serverNextFetch = st.nextFetch; updateNextFetchDisplay() }
-            } catch (e) { }
-          }, 15000);
-        }
       } catch (e) { }
     }
 

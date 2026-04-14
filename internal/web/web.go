@@ -83,6 +83,7 @@ type Server struct {
 	telegramLoggedIn bool
 	nextFetch        uint32
 	latestVersion    string
+	lastRefreshAt    int64
 	lastMsgIDs       map[int]uint32 // last seen message IDs per channel
 	lastHashes       map[int]uint32 // last seen content hashes per channel
 
@@ -113,6 +114,7 @@ type Server struct {
 	clients map[chan string]struct{}
 
 	stopRefresh chan struct{}
+	autoOnce    sync.Once
 
 	scanner *client.ResolverScanner
 }
@@ -217,6 +219,7 @@ func (s *Server) Run() error {
 			s.startCheckerThenRefresh()
 		}
 	}
+	s.startAutoRefreshLoop()
 
 	var handler http.Handler = mux
 	if s.password != "" {
@@ -271,6 +274,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status["telegramLoggedIn"] = s.telegramLoggedIn
 		status["nextFetch"] = s.nextFetch
 		status["latestVersion"] = s.latestVersion
+		status["lastRefreshAt"] = s.lastRefreshAt
 		// Include last resolver scan if recent (<24 h) so the frontend can offer a quick-start.
 		if ls := s.loadLastScan(); ls != nil {
 			status["lastScan"] = map[string]any{
@@ -389,9 +393,27 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		go s.refreshChannel(chNum)
 	} else {
-		go s.refreshMetadataOnly()
+		go s.refreshAllChannels()
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) startAutoRefreshLoop() {
+	s.autoOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				s.mu.RLock()
+				ready := s.fetcher != nil
+				s.mu.RUnlock()
+				if !ready {
+					continue
+				}
+				s.refreshAllChannels()
+			}
+		}()
+	})
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -900,6 +922,7 @@ func (s *Server) refreshMetadataOnly() {
 	s.telegramLoggedIn = meta.TelegramLoggedIn
 	s.nextFetch = meta.NextFetch
 	s.metaFetchedAt = time.Now()
+	s.lastRefreshAt = time.Now().Unix()
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -1078,6 +1101,7 @@ func (s *Server) refreshChannel(channelNum int) {
 		s.lastMsgIDs[channelNum] = ch.LastMsgID
 		s.lastHashes[channelNum] = ch.ContentHash
 	}
+	s.lastRefreshAt = time.Now().Unix()
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -1091,6 +1115,23 @@ func (s *Server) refreshChannel(channelNum int) {
 
 	s.addLog(fmt.Sprintf("Updated %s: %d messages", ch.Name, len(msgs)))
 	s.broadcast(fmt.Sprintf("event: update\ndata: {\"type\":\"messages\",\"channel\":%d}\n\n", channelNum))
+}
+
+func (s *Server) refreshAllChannels() {
+	s.mu.RLock()
+	checker := s.checker
+	ctx := s.fetcherCtx
+	s.mu.RUnlock()
+	if checker != nil && ctx != nil {
+		checker.CheckNow(ctx)
+	}
+	s.refreshMetadataOnly()
+	s.mu.RLock()
+	total := len(s.channels)
+	s.mu.RUnlock()
+	for i := 1; i <= total; i++ {
+		s.refreshChannel(i)
+	}
 }
 
 func (s *Server) loadConfig() (*Config, error) {
