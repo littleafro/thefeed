@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -148,17 +150,21 @@ func TestPublicReaderEmbedImagesInMessages(t *testing.T) {
 
 	pr := NewPublicReader(nil, nil, 15, 500, 1)
 	pr.client = srv.Client()
+	pr.cacheDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(pr.cacheDir, hashKey(imageURL)+".webp"), []byte{0x52, 0x49, 0x46, 0x46}, 0600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
 	msgs := []protocol.Message{
 		{ID: 1, Text: protocol.MediaImage + "\ncaption\n[IMG_URL]" + imageURL},
 	}
-	out := pr.embedImagesInMessages(context.Background(), msgs)
+	out := pr.embedImagesInMessages(context.Background(), "test-channel", msgs)
 	if len(out) != 1 {
 		t.Fatalf("len(out) = %d, want 1", len(out))
 	}
 	if strings.Contains(out[0].Text, "[IMG_URL]") {
 		t.Fatalf("expected IMG_URL marker to be replaced, got %q", out[0].Text)
 	}
-	if !strings.Contains(out[0].Text, "\n[IMG_MIME]image/png\n[IMG_SIZE]4\n[IMG_B64]") {
+	if !strings.Contains(out[0].Text, "\n[IMG_MIME]image/webp\n[IMG_SIZE]4\n[IMG_B64]") {
 		t.Fatalf("missing inline image markers, got %q", out[0].Text)
 	}
 }
