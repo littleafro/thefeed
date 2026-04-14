@@ -85,6 +85,14 @@ type Fetcher struct {
 	// exchangeFn is the function used to send a DNS message to a resolver.
 	// It defaults to a real dns.Client exchange and can be replaced in tests.
 	exchangeFn func(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, time.Duration, error)
+
+	partialMu    sync.Mutex
+	partialByKey map[string]*partialChannelState
+}
+
+type partialChannelState struct {
+	blocks [][]byte
+	have   []bool
 }
 
 // NewFetcher creates a new DNS block fetcher.
@@ -105,8 +113,9 @@ func NewFetcher(domain, passphrase string, resolvers []string) (*Fetcher, error)
 		allResolvers: r,
 		// activeResolvers starts empty — the ResolverChecker fills it in after
 		// the first health-check scan so no fetch is attempted with unvalidated resolvers.
-		timeout: 25 * time.Second,
-		scatter: 4, // query 4 resolvers in parallel by default
+		timeout:      25 * time.Second,
+		scatter:      4, // query 4 resolvers in parallel by default
+		partialByKey: make(map[string]*partialChannelState),
 	}
 	f.exchangeFn = func(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, time.Duration, error) {
 		c := &dns.Client{Timeout: f.timeout, Net: "udp"}
@@ -575,6 +584,8 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 	if blockCount <= 0 {
 		return nil, nil
 	}
+	cacheKey := fmt.Sprintf("%d:%d", channelNum, blockCount)
+	state := f.getOrCreatePartial(cacheKey, blockCount)
 
 	type blockResult struct {
 		idx  int
@@ -589,6 +600,9 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 	var wg sync.WaitGroup
 
 	for i := 0; i < blockCount; i++ {
+		if state.have[i] {
+			continue
+		}
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -612,7 +626,13 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 	}()
 
 	ordered := make([][]byte, blockCount)
+	copy(ordered, state.blocks)
 	completed := 0
+	for i := 0; i < blockCount; i++ {
+		if state.have[i] {
+			completed++
+		}
+	}
 	for r := range results {
 		if r.err != nil {
 			if r.err == ctx.Err() {
@@ -624,6 +644,13 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 			return nil, fmt.Errorf("channel %d block %d: %w", channelNum, r.idx, r.err)
 		}
 		ordered[r.idx] = r.data
+		f.partialMu.Lock()
+		ps := f.partialByKey[cacheKey]
+		if ps != nil && r.idx >= 0 && r.idx < len(ps.have) {
+			ps.blocks[r.idx] = r.data
+			ps.have[r.idx] = true
+		}
+		f.partialMu.Unlock()
 		completed++
 		f.logProgress(fmt.Sprintf("Channel %d (%d/%d)", channelNum, completed, blockCount), float64(completed), float64(blockCount))
 	}
@@ -637,10 +664,38 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 	decompressed, err := protocol.DecompressMessages(allData)
 	if err != nil {
 		// Fall back to raw parse for backward compatibility with uncompressed data
-		return protocol.ParseMessages(allData)
+		msgs, rawErr := protocol.ParseMessages(allData)
+		if rawErr == nil {
+			f.clearPartial(cacheKey)
+		}
+		return msgs, rawErr
 	}
 
-	return protocol.ParseMessages(decompressed)
+	msgs, parseErr := protocol.ParseMessages(decompressed)
+	if parseErr == nil {
+		f.clearPartial(cacheKey)
+	}
+	return msgs, parseErr
+}
+
+func (f *Fetcher) getOrCreatePartial(key string, blockCount int) *partialChannelState {
+	f.partialMu.Lock()
+	defer f.partialMu.Unlock()
+	if ps, ok := f.partialByKey[key]; ok && len(ps.blocks) == blockCount && len(ps.have) == blockCount {
+		return ps
+	}
+	ps := &partialChannelState{
+		blocks: make([][]byte, blockCount),
+		have:   make([]bool, blockCount),
+	}
+	f.partialByKey[key] = ps
+	return ps
+}
+
+func (f *Fetcher) clearPartial(key string) {
+	f.partialMu.Lock()
+	defer f.partialMu.Unlock()
+	delete(f.partialByKey, key)
 }
 
 func (f *Fetcher) queryResolver(ctx context.Context, resolver, qname string) ([]byte, error) {

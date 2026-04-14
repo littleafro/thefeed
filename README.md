@@ -32,6 +32,7 @@ DNS-based feed reader for Telegram channels and public X accounts. Designed for 
 - Message compression (deflate) for efficient transfer
 - Web UI password protection (`--password` on client)
 - New message indicators and next-fetch countdown timer
+- Automatic background refresh of all channels every 5 minutes (sequential, channel-by-channel)
 - Channel type badges (Private/Public)
 - X channel badges (`x/username`) with separate color in the sidebar
 - Media type detection (`[IMAGE]`, `[VIDEO]`, etc.)
@@ -250,7 +251,8 @@ The browser-based UI has:
 - **New message badges**: visual indicators for channels with new messages
 - **Next-fetch timer**: countdown to next automatic refresh
 - **Media detection**: `[IMAGE]`, `[VIDEO]`, `[DOCUMENT]` tag highlighting
-- **Inline image transport over DNS**: public Telegram image posts are embedded in DNS-delivered message payloads (subject to server `--public-image-kb` cap), then rendered in the client when **Load images** is enabled
+- **Inline image transport over DNS**: public Telegram image posts are embedded in DNS-delivered message payloads (subject to server `--public-image-kb` cap per image), then rendered in the client when **Load images** is enabled
+- **Server-side image compression/cache**: public images are cached and converted to WebP (`cwebp -q 50 -resize 0 50`), and cache eviction starts once image cache exceeds 2 GiB
 - **Log panel** (bottom): live DNS query log
 - **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, concurrent requests (scatter), timeout, debug mode
 - **Per-profile cache**: 1-hour browser cache so data is visible instantly on reopen
