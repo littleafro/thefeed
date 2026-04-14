@@ -1806,6 +1806,7 @@
     // ===== STATE =====
     var selectedChannel = 0, channels = [], eventSource = null, autoRefreshTimer = null, telegramLoggedIn = false, logVisible = false;
     var lastRefreshAt = 0, previousMsgIDs = {}, currentMsgTexts = [];
+    var nextAutoRefreshAt = 0, nextAutoRefreshInterval = null;
     var appVersion = '', latestVersion = '';
     var loadImagesEnabled = false, maxImageKB = 500;
     var profiles = null, activeProfileId = '', editingProfileId = null, resolverScanHint = '', resolverScanHealthy = 0, resolverScanDone = 0, resolverScanTotal = 0;
@@ -2675,7 +2676,20 @@
       p.innerHTML = '<div class="progress-item" id="prog-init" data-last-update="' + Date.now() + '"><button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label">' + t('loading') + '</div><div class="progress-bar"><div class="progress-fill" style="width:30%;animation:prog-pulse 1.5s ease-in-out infinite"></div></div></div>';
       if (window.innerWidth <= 768) { openChat(); openLog(); }
     }
-    function startAutoRefresh() { if (autoRefreshTimer) return; autoRefreshTimer = setInterval(function () { doRefresh(true) }, 300000) }
+    function startAutoRefresh() {
+      if (autoRefreshTimer) return;
+      function resetCountdown() {
+        nextAutoRefreshAt = Math.floor(Date.now() / 1000) + 300;
+        updateNextFetchDisplay();
+      }
+      resetCountdown();
+      autoRefreshTimer = setInterval(function () {
+        doRefresh(true);
+        resetCountdown();
+      }, 300000);
+      if (nextAutoRefreshInterval) clearInterval(nextAutoRefreshInterval);
+      nextAutoRefreshInterval = setInterval(updateNextFetchDisplay, 1000);
+    }
     function updateNextFetchDisplay() {
       var el = document.getElementById('nextFetchTimer');
       var info = document.getElementById('nextFetchInfoBtn');
@@ -2683,7 +2697,14 @@
       if (info) { info.style.display = ''; info.title = t('next_fetch_info') }
       var dt = new Date(lastRefreshAt * 1000);
       var locale = (lang === 'fa' ? 'fa-IR' : 'en-US');
-      el.textContent = dt.toLocaleString(locale, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var lastTxt = dt.toLocaleString(locale, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var countdown = '';
+      if (nextAutoRefreshAt > 0) {
+        var left = Math.max(0, nextAutoRefreshAt - Math.floor(Date.now() / 1000));
+        var mm = Math.floor(left / 60), ss = left % 60;
+        countdown = ' | ' + mm + ':' + (ss < 10 ? '0' : '') + ss;
+      }
+      el.textContent = lastTxt + countdown;
     }
     async function doRefresh(quiet) {
       try {

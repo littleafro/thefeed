@@ -139,7 +139,7 @@ func (pr *PublicReader) fetchAll(ctx context.Context) {
 		pr.mu.RLock()
 		cached, ok := pr.cache[username]
 		pr.mu.RUnlock()
-		if ok && time.Since(cached.fetched) < pr.cacheTTL {
+		if ok && time.Since(cached.fetched) < pr.cacheTTL && len(pr.failedImageIDs[username]) == 0 {
 			continue
 		}
 
@@ -376,12 +376,11 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 		return "", "", 0
 	}
 	compressed := pr.compressWebp(b)
-	if len(compressed) == 0 {
-		// To guarantee compressed-only delivery, skip embedding when compression fails.
-		return "", "", 0
+	out := b
+	if len(compressed) > 0 {
+		out = compressed
+		ct = "image/webp"
 	}
-	out := compressed
-	ct = "image/webp"
 	_ = os.WriteFile(path, out, 0600)
 	_ = os.Remove(tmpPart)
 	return ct, base64.StdEncoding.EncodeToString(out), len(out)
