@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"hash/crc32"
@@ -180,8 +181,37 @@ func (xr *XPublicReader) fetchAll(ctx context.Context) {
 
 		xr.feed.UpdateChannel(chNum, msgs)
 		xr.feed.SetChatInfo(chNum, protocol.ChatTypeX, false)
+		if mime, b64 := xr.fetchChannelThumbnail(ctx, account); b64 != "" {
+			xr.feed.SetChannelThumbnail(chNum, mime, b64)
+		}
 		log.Printf("[x] updated @%s: %d posts", account, len(msgs))
 	}
+}
+
+func (xr *XPublicReader) fetchChannelThumbnail(ctx context.Context, account string) (mimeType, b64 string) {
+	raw := "https://unavatar.io/x/" + url.PathEscape(strings.TrimSpace(account))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0)")
+	resp, err := xr.client.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", ""
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	if !strings.HasPrefix(ct, "image/") {
+		return "", ""
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024+1))
+	if err != nil || len(data) == 0 || len(data) > 256*1024 {
+		return "", ""
+	}
+	return ct, base64.StdEncoding.EncodeToString(data)
 }
 
 func (xr *XPublicReader) fetchAccount(ctx context.Context, username string) ([]protocol.Message, error) {

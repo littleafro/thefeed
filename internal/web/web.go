@@ -8,13 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/crc32"
-	"io"
 	"io/fs"
 	"log"
 	mrand "math/rand/v2"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -192,7 +189,6 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/api/profiles/switch", s.handleProfileSwitch)
 	mux.HandleFunc("/api/settings", s.handleSettings)
-	mux.HandleFunc("/api/image-proxy", s.handleImageProxy)
 	mux.HandleFunc("/api/version-check", s.handleVersionCheck)
 	mux.HandleFunc("/api/cache/clear", s.handleClearCache)
 	mux.HandleFunc("/api/resolvers/apply-saved", s.handleApplySavedResolvers)
@@ -330,18 +326,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	channels := make([]protocol.ChannelInfo, len(s.channels))
 	copy(channels, s.channels)
 	s.mu.RUnlock()
-
-	type channelView struct {
-		protocol.ChannelInfo
-		ThumbnailURL  string `json:"thumbnailURL,omitempty"`
-		ThumbnailHash uint32 `json:"thumbnailHash,omitempty"`
-	}
-	out := make([]channelView, 0, len(channels))
-	for _, ch := range channels {
-		thumbURL := channelThumbnailURL(ch)
-		out = append(out, channelView{ChannelInfo: ch, ThumbnailURL: thumbURL, ThumbnailHash: crc32.ChecksumIEEE([]byte(thumbURL))})
-	}
-	writeJSON(w, out)
+	writeJSON(w, channels)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -1218,22 +1203,6 @@ func (s *Server) saveConfig(cfg *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-func channelThumbnailURL(ch protocol.ChannelInfo) string {
-	name := strings.TrimSpace(ch.Name)
-	name = strings.TrimPrefix(name, "@")
-	if ch.ChatType == protocol.ChatTypeX {
-		name = strings.TrimPrefix(strings.ToLower(name), "x/")
-		if name == "" {
-			return ""
-		}
-		return "https://unavatar.io/x/" + url.PathEscape(name)
-	}
-	if name == "" {
-		return ""
-	}
-	return "https://t.me/i/userpic/320/" + url.PathEscape(name) + ".jpg"
-}
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -1511,70 +1480,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
-}
-
-func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
-	if rawURL == "" {
-		http.Error(w, "missing url", 400)
-		return
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		http.Error(w, "invalid url", 400)
-		return
-	}
-	limitKB := 500
-	if q := strings.TrimSpace(r.URL.Query().Get("maxKB")); q != "" {
-		if n, convErr := strconv.Atoi(q); convErr == nil && n > 0 {
-			limitKB = n
-		}
-	}
-	if limitKB > 5*1024 {
-		limitKB = 5 * 1024
-	}
-	maxBytes := int64(limitKB) * 1024
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, rawURL, nil)
-	if err != nil {
-		http.Error(w, "bad request", 400)
-		return
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0)")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		http.Error(w, "fetch failed", 502)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "fetch failed", 502)
-		return
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/") {
-		http.Error(w, "not an image", 415)
-		return
-	}
-	if cl := resp.ContentLength; cl > maxBytes {
-		http.Error(w, "image too large", 413)
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		http.Error(w, "read failed", 502)
-		return
-	}
-	if int64(len(data)) > maxBytes {
-		http.Error(w, "image too large", 413)
-		return
-	}
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	w.Write(data)
 }
 
 func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {

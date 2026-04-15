@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,8 @@ type Feed struct {
 	contentHashes    map[int]uint32
 	chatTypes        map[int]protocol.ChatType
 	canSend          map[int]bool
+	thumbMIMEs       map[int]string
+	thumbB64         map[int]string
 	metaBlocks       [][]byte // metadata for all channels
 	versionBlocks    [][]byte // channel for latest server-known release version
 	updated          time.Time
@@ -36,6 +39,8 @@ func NewFeed(channels []string) *Feed {
 		contentHashes: make(map[int]uint32),
 		chatTypes:     make(map[int]protocol.ChatType),
 		canSend:       make(map[int]bool),
+		thumbMIMEs:    make(map[int]string),
+		thumbB64:      make(map[int]string),
 	}
 	f.rotateMarker()
 	f.rebuildMetaBlocks()
@@ -140,6 +145,8 @@ func (f *Feed) rebuildMetaBlocks() {
 			ContentHash: f.contentHashes[chNum],
 			ChatType:    f.chatTypes[chNum],
 			CanSend:     f.canSend[chNum],
+			ThumbMIME:   f.thumbMIMEs[chNum],
+			ThumbB64:    f.thumbB64[chNum],
 		})
 	}
 
@@ -193,6 +200,15 @@ func (f *Feed) SetChatInfo(channelNum int, chatType protocol.ChatType, canSend b
 	defer f.mu.Unlock()
 	f.chatTypes[channelNum] = chatType
 	f.canSend[channelNum] = canSend
+	f.rebuildMetaBlocks()
+}
+
+// SetChannelThumbnail stores the inline thumbnail payload for metadata delivery.
+func (f *Feed) SetChannelThumbnail(channelNum int, mimeType, base64Data string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.thumbMIMEs[channelNum] = strings.TrimSpace(mimeType)
+	f.thumbB64[channelNum] = strings.TrimSpace(base64Data)
 	f.rebuildMetaBlocks()
 }
 

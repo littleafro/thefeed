@@ -163,8 +163,17 @@ func (pr *PublicReader) fetchAll(ctx context.Context) {
 
 		pr.feed.UpdateChannel(chNum, msgs)
 		pr.feed.SetChatInfo(chNum, protocol.ChatTypeChannel, false)
+		if mime, b64 := pr.fetchChannelThumbnail(ctx, username); b64 != "" {
+			pr.feed.SetChannelThumbnail(chNum, mime, b64)
+		}
 		log.Printf("[public] updated %s: %d messages", username, len(msgs))
 	}
+}
+
+func (pr *PublicReader) fetchChannelThumbnail(ctx context.Context, username string) (mimeType, base64Data string) {
+	avatarURL := "https://t.me/i/userpic/320/" + url.PathEscape(strings.TrimSpace(username)) + ".jpg"
+	mime, encoded, _ := pr.fetchInlineImage(ctx, avatarURL)
+	return mime, encoded
 }
 
 func (pr *PublicReader) fetchChannel(ctx context.Context, username string) ([]protocol.Message, error) {
@@ -449,15 +458,15 @@ func (pr *PublicReader) enforceCacheLimit(limit int64) {
 }
 
 func extractImageURLMarker(text string) string {
-	idx := strings.Index(text, "\n[IMG_URL]")
+	idx := strings.Index(text, "\n[IMG_SRC]")
 	if idx == -1 {
 		return ""
 	}
-	return strings.TrimSpace(text[idx+len("\n[IMG_URL]"):])
+	return strings.TrimSpace(text[idx+len("\n[IMG_SRC]"):])
 }
 
 func replaceImageURLWithInlineData(text, mimeType, encoded string, byteLen int) string {
-	idx := strings.Index(text, "\n[IMG_URL]")
+	idx := strings.Index(text, "\n[IMG_SRC]")
 	if idx == -1 {
 		return text
 	}
@@ -491,6 +500,7 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 		case findFirstByClass(n, "tgme_widget_message_video_player") != nil ||
 			findFirstByClass(n, "tgme_widget_message_roundvideo_player") != nil:
 			mediaPrefix = protocol.MediaVideo
+			imageURL = extractVideoPosterURL(n)
 		case findFirstByClass(n, "tgme_widget_message_sticker_wrap") != nil:
 			mediaPrefix = protocol.MediaSticker
 		case findFirstByClass(n, "tgme_widget_message_voice") != nil:
@@ -512,7 +522,7 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 				text = mediaPrefix
 			}
 			if imageURL != "" {
-				text += "\n[IMG_URL]" + imageURL
+				text += "\n[IMG_SRC]" + imageURL
 			}
 		}
 		if text == "" {
@@ -552,6 +562,24 @@ func extractPhotoURL(n *html.Node) string {
 	}
 	if href := strings.TrimSpace(attrValue(photo, "href")); strings.HasPrefix(href, "https://") {
 		return href
+	}
+	return ""
+}
+
+func extractVideoPosterURL(n *html.Node) string {
+	for _, cls := range []string{"tgme_widget_message_video_thumb", "tgme_widget_message_roundvideo_thumb"} {
+		thumb := findFirstByClass(n, cls)
+		if thumb == nil {
+			continue
+		}
+		if style := attrValue(thumb, "style"); style != "" {
+			if u := extractURLFromInlineStyle(style); u != "" {
+				return u
+			}
+		}
+		if poster := strings.TrimSpace(attrValue(thumb, "poster")); strings.HasPrefix(poster, "https://") {
+			return poster
+		}
 	}
 	return ""
 }
