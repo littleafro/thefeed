@@ -308,6 +308,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.config = &cfg
 		s.mu.Unlock()
+		if err := s.syncActiveProfileConfig(&cfg); err != nil {
+			http.Error(w, fmt.Sprintf("sync active profile: %v", err), 500)
+			return
+		}
 
 		if err := s.initFetcher(); err != nil {
 			http.Error(w, fmt.Sprintf("init fetcher: %v", err), 500)
@@ -722,8 +726,41 @@ func (s *Server) initFetcher() error {
 
 	s.fetcher = fetcher
 	s.cache = cache
+
+	// Warm in-memory state from cached metadata so channels are available on
+	// relaunch even before the first DNS refresh completes.
+	if cachedMeta := cache.GetMetadata(); cachedMeta != nil {
+		s.channels = cachedMeta.Channels
+		s.telegramLoggedIn = cachedMeta.TelegramLoggedIn
+		s.nextFetch = cachedMeta.NextFetch
+	}
+
 	go cache.Cleanup() // remove channel files not updated in 7 days
 	return nil
+}
+
+// syncActiveProfileConfig keeps profiles.json aligned with direct /api/config saves.
+func (s *Server) syncActiveProfileConfig(cfg *Config) error {
+	pl, err := s.loadProfiles()
+	if err != nil || pl == nil || pl.Active == "" {
+		return nil
+	}
+	updated := false
+	for i := range pl.Profiles {
+		if pl.Profiles[i].ID != pl.Active {
+			continue
+		}
+		pl.Profiles[i].Config = *cfg
+		if pl.Profiles[i].Nickname == "" {
+			pl.Profiles[i].Nickname = cfg.Domain
+		}
+		updated = true
+		break
+	}
+	if !updated {
+		return nil
+	}
+	return s.saveProfiles(pl)
 }
 
 func (s *Server) checkLatestVersion(ctx context.Context) (string, error) {
