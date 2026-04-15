@@ -1352,20 +1352,6 @@
   <!-- TOAST -->
   <div id="toast"></div>
 
-  <!-- ===== SAVED RESOLVERS POPUP ===== -->
-  <div class="modal-overlay" id="savedResolversModal">
-    <div class="modal" style="max-width:380px">
-      <h2 data-i18n="saved_resolvers_title">Quick Start</h2>
-      <p id="savedResolversMsg" style="font-size:13px;color:var(--text-dim);margin-bottom:16px;line-height:1.6"></p>
-      <div class="modal-actions">
-        <button class="btn btn-flat" onclick="savedResolversSkip()" data-i18n="saved_resolvers_skip">Skip</button>
-          Again</button>
-        <button class="btn btn-primary" onclick="savedResolversUseNow()" data-i18n="saved_resolvers_use">Use
-          Now</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== SETTINGS MODAL ===== -->
   <div class="modal-overlay" id="settingsModal">
     <div class="modal">
@@ -1618,7 +1604,8 @@
     var selectedChannel = 0, channels = [], eventSource = null, autoRefreshTimer = null, telegramLoggedIn = false, logVisible = false;
     var lastRefreshAt = 0, previousMsgIDs = {}, currentMsgTexts = [];
     var channelThumbVersions = {}, channelThumbURLs = {};
-    var nextAutoRefreshAt = 0, nextAutoRefreshInterval = null;
+    var nextAutoRefreshInterval = null;
+    var channelLastRefreshAt = {}, channelNextAutoRefreshAt = {}, channelRefreshInFlight = {}, refreshQueue = [], refreshQueueBusy = false;
     var appVersion = '', latestVersion = '';
     var loadImagesEnabled = false, maxImageKB = 500;
     var profiles = null, activeProfileId = '', editingProfileId = null, resolverScanHint = '', resolverScanHealthy = 0, resolverScanDone = 0, resolverScanTotal = 0;
@@ -1641,7 +1628,6 @@
         await loadProfiles();
         if (!st.configured) { openProfiles(); return }
         cleanupOldLocalStorageKeys();
-        checkAndShowSavedResolversPrompt(st);
         telegramLoggedIn = !!st.telegramLoggedIn;
         lastRefreshAt = st.lastRefreshAt || 0;
         latestVersion = st.latestVersion || '';
@@ -1651,7 +1637,12 @@
         if (channels && channels.length > 0) await selectChannel(1);
         else { showInitProgress(); await doRefresh(); openChat() }
         startAutoRefresh();
-      } catch (e) { }
+      } catch (e) {
+        if (channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
+      }
     }
 
     // ===== FONT SIZE =====
@@ -1670,7 +1661,12 @@
         document.getElementById('cfgMaxImageKB').value = maxImageKB;
         if (s.version) { appVersion = s.version; renderAppVersion(s.version, s.commit); }
         renderLatestVersion();
-      } catch (e) { }
+      } catch (e) {
+        if (channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
+      }
     }
 
     function renderAppVersion(v, commit) {
@@ -1768,35 +1764,6 @@
       try { var r = await fetch('/api/cache/clear', { method: 'POST' }); var j = await r.json(); if (j.ok) { alert(t('cache_cleared')) } } catch (e) { }
     }
 
-    // ===== SAVED RESOLVERS PROMPT =====
-    function checkAndShowSavedResolversPrompt(status) {
-      if (sessionStorage.getItem('thefeed_scan_prompt_shown')) return;
-      if (!status.lastScan || !status.lastScan.count) return;
-      var ls = status.lastScan;
-      var ageSec = Math.floor(Date.now() / 1000) - ls.scannedAt;
-      var ageStr;
-      if (ageSec < 3600) ageStr = Math.max(1, Math.round(ageSec / 60)) + ' ' + t('minutes_ago');
-      else ageStr = Math.round(ageSec / 3600) + ' ' + t('hours_ago');
-      var msg = t('saved_resolvers_msg').replace('{n}', ls.count).replace('{t}', ageStr);
-      document.getElementById('savedResolversMsg').textContent = msg;
-      document.getElementById('savedResolversModal').classList.add('active');
-    }
-    function savedResolversSkip() {
-      // "Later" — just close, server already applied saved resolvers and refresh is underway
-      document.getElementById('savedResolversModal').classList.remove('active');
-      sessionStorage.setItem('thefeed_scan_prompt_shown', '1');
-    }
-    function savedResolversUseNow() {
-      // Server already applied saved resolvers at startup; just close the popup
-      savedResolversSkip();
-      showToast(t('saved_resolvers_applied'));
-    }
-    async function savedResolversRescan() {
-      savedResolversSkip();
-      try { await fetch('/api/rescan', { method: 'POST' }) } catch (e) { }
-      showToast(t('rescan_started'));
-    }
-
     // ===== SSE =====
     function connectSSE() {
       if (eventSource) eventSource.close();
@@ -1815,6 +1782,7 @@
           await selectChannel(1); return
         }
         if (data && typeof data === 'object' && data.channel) {
+          markChannelRefreshDone(data.channel);
           if (data.channel === snapChannel) await loadMessages(data.channel)
         } else if (snapChannel > 0) { await loadMessages(snapChannel) }
         updateSendPanel();
@@ -2095,11 +2063,20 @@
     async function loadChannels() {
       try {
         var r = await fetch('/api/channels'); channels = await r.json(); if (!channels) channels = [];
+        for (var i = 1; i <= channels.length; i++) {
+          if (!channelLastRefreshAt[i] && lastRefreshAt) markChannelRefreshDone(i, lastRefreshAt);
+        }
         renderChannels(); updateSendPanel();
         var initBar = document.getElementById('prog-init'); if (initBar) initBar.remove();
         var sr = await fetch('/api/status'); var st = await sr.json();
         telegramLoggedIn = !!st.telegramLoggedIn;
-        if (st.lastRefreshAt) { lastRefreshAt = st.lastRefreshAt; updateNextFetchDisplay() }
+        if (st.lastRefreshAt) {
+          lastRefreshAt = st.lastRefreshAt;
+          for (var i = 1; i <= channels.length; i++) {
+            if (!channelLastRefreshAt[i]) markChannelRefreshDone(i, st.lastRefreshAt);
+          }
+          updateNextFetchDisplay();
+        }
         if (st.latestVersion) { latestVersion = st.latestVersion; renderLatestVersion() }
       } catch (e) { }
     }
@@ -2187,12 +2164,9 @@
       var ch = channels[num - 1]; var name = (ch && (ch.Name || ch.name)) || 'Channel ' + num;
       document.getElementById('chatName').textContent = name;
       renderChannels(); updateSendPanel();
-      document.getElementById('messages').innerHTML = '<div class="empty-state"><p>' + t('loading') + '</p></div>';
       document.getElementById('scrollDownBtn').classList.remove('visible');
-      // Show immediate feedback progress bar
-      showChannelFetchProgress(num, name);
       await loadMessages(num);
-      await doRefresh(true);
+      updateNextFetchDisplay();
     }
 
     function showChannelFetchProgress(num, name) {
@@ -2492,41 +2466,82 @@
     }
     function startAutoRefresh() {
       if (autoRefreshTimer) return;
-      function resetCountdown() {
-        nextAutoRefreshAt = Math.floor(Date.now() / 1000) + 300;
-        updateNextFetchDisplay();
-      }
-      resetCountdown();
       autoRefreshTimer = setInterval(function () {
-        doRefresh(true);
-        resetCountdown();
-      }, 300000);
+        var now = Math.floor(Date.now() / 1000);
+        for (var i = 1; i <= channels.length; i++) {
+          if (!channelNextAutoRefreshAt[i]) continue;
+          if (channelRefreshInFlight[i]) continue;
+          if (channelNextAutoRefreshAt[i] <= now && refreshQueue.indexOf(i) === -1) {
+            refreshQueue.push(i);
+          }
+        }
+        processRefreshQueue();
+      }, 1000);
       if (nextAutoRefreshInterval) clearInterval(nextAutoRefreshInterval);
       nextAutoRefreshInterval = setInterval(updateNextFetchDisplay, 1000);
+    }
+    async function processRefreshQueue() {
+      if (refreshQueueBusy) return;
+      refreshQueueBusy = true;
+      try {
+        while (refreshQueue.length > 0) {
+          var chNum = refreshQueue.shift();
+          if (channelRefreshInFlight[chNum]) continue;
+          channelRefreshInFlight[chNum] = true;
+          await doRefresh(true, chNum);
+          (function (channelNo) {
+            setTimeout(function () {
+              if (channelRefreshInFlight[channelNo] && refreshQueue.indexOf(channelNo) === -1) refreshQueue.push(channelNo);
+            }, 90000);
+          })(chNum);
+        }
+      } finally {
+        refreshQueueBusy = false;
+      }
+    }
+    function markChannelRefreshDone(chNum, atSec) {
+      var nowSec = atSec || Math.floor(Date.now() / 1000);
+      channelLastRefreshAt[chNum] = nowSec;
+      channelNextAutoRefreshAt[chNum] = nowSec + 300;
+      channelRefreshInFlight[chNum] = false;
+      if (selectedChannel === chNum) updateNextFetchDisplay();
     }
     function updateNextFetchDisplay() {
       var el = document.getElementById('nextFetchTimer');
       var info = document.getElementById('nextFetchInfoBtn');
-      if (!lastRefreshAt) { el.textContent = ''; if (info) info.style.display = 'none'; return }
+      var chLast = selectedChannel > 0 ? (channelLastRefreshAt[selectedChannel] || 0) : 0;
+      if (!chLast && lastRefreshAt) chLast = lastRefreshAt;
+      if (!chLast) { el.textContent = ''; if (info) info.style.display = 'none'; return }
       if (info) { info.style.display = ''; info.title = t('next_fetch_info') }
-      var dt = new Date(lastRefreshAt * 1000);
+      var dt = new Date(chLast * 1000);
       var locale = (lang === 'fa' ? 'fa-IR' : 'en-US');
       var lastTxt = dt.toLocaleString(locale, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       var countdown = '';
-      if (nextAutoRefreshAt > 0) {
-        var left = Math.max(0, nextAutoRefreshAt - Math.floor(Date.now() / 1000));
+      var nextAt = selectedChannel > 0 ? (channelNextAutoRefreshAt[selectedChannel] || 0) : 0;
+      if (nextAt > 0) {
+        var left = Math.max(0, nextAt - Math.floor(Date.now() / 1000));
         var mm = Math.floor(left / 60), ss = left % 60;
         countdown = ' | ' + mm + ':' + (ss < 10 ? '0' : '') + ss;
       }
       el.textContent = lastTxt + countdown;
     }
-    async function doRefresh(quiet) {
+    async function doRefresh(quiet, channelNum) {
       try {
         var url = '/api/refresh';
-        if (quiet) url += '?quiet=1';
-        await fetch(url, { method: 'POST' });
+        if (channelNum) url += '?channel=' + channelNum + (quiet ? '&quiet=1' : '');
+        else if (quiet) url += '?quiet=1';
+        var resp = await fetch(url, { method: 'POST' });
+        if (!resp.ok && channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
         if (!quiet && selectedChannel > 0) setTimeout(function () { loadChannels(); loadMessages(selectedChannel) }, 3000);
-      } catch (e) { }
+      } catch (e) {
+        if (channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
+      }
     }
 
     // ===== SEND =====
