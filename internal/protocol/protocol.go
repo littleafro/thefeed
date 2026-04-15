@@ -84,6 +84,8 @@ type ChannelInfo struct {
 	ContentHash uint32   // CRC32 of serialized message data; changes on edits
 	ChatType    ChatType // 0=Telegram channel, 1=private chat, 2=X account
 	CanSend     bool     // true if server allows sending messages to this chat
+	ThumbMIME   string   // optional MIME type for inline thumbnail (e.g. image/webp)
+	ThumbB64    string   // optional base64 thumbnail image data
 }
 
 // Message represents a single feed message in a channel.
@@ -102,12 +104,15 @@ func ContentHashOf(msgs []Message) uint32 {
 
 // SerializeMetadata encodes metadata into bytes for channel 0 blocks.
 // Format: marker(3) + timestamp(4) + nextFetch(4) + flags(1) + channelCount(2) + per-channel data
-// Per-channel: nameLen(1) + name + blocks(2) + lastMsgID(4) + contentHash(4) + chatType(1) + flags(1)
+// Per-channel:
+// nameLen(1) + name + blocks(2) + lastMsgID(4) + contentHash(4) + chatType(1) + flags(1) +
+// thumbMimeLen(1) + thumbMime + thumbB64Len(4) + thumbB64
 func SerializeMetadata(m *Metadata) []byte {
 	// 3 marker + 4 timestamp + 4 nextFetch + 1 flags + 2 channel count + per-channel data
 	size := MarkerSize + 4 + 4 + 1 + 2
 	for _, ch := range m.Channels {
-		size += 1 + len(ch.Name) + 2 + 4 + 4 + 1 + 1 // +4 for contentHash
+		size += 1 + len(ch.Name) + 2 + 4 + 4 + 1 + 1
+		size += 1 + len(ch.ThumbMIME) + 4 + len(ch.ThumbB64)
 	}
 	buf := make([]byte, size)
 	off := 0
@@ -154,6 +159,19 @@ func SerializeMetadata(m *Metadata) []byte {
 		}
 		buf[off] = chFlags
 		off++
+		thumbMime := []byte(ch.ThumbMIME)
+		if len(thumbMime) > 255 {
+			thumbMime = thumbMime[:255]
+		}
+		buf[off] = byte(len(thumbMime))
+		off++
+		copy(buf[off:], thumbMime)
+		off += len(thumbMime)
+		thumbB64 := []byte(ch.ThumbB64)
+		binary.BigEndian.PutUint32(buf[off:], uint32(len(thumbB64)))
+		off += 4
+		copy(buf[off:], thumbB64)
+		off += len(thumbB64)
 	}
 
 	return buf
@@ -210,6 +228,26 @@ func ParseMetadata(data []byte) (*Metadata, error) {
 		off++
 		chFlags := data[off]
 		off++
+		if off >= len(data) {
+			return nil, fmt.Errorf("truncated thumbnail mime length at %d", i)
+		}
+		thumbMimeLen := int(data[off])
+		off++
+		if off+thumbMimeLen > len(data) {
+			return nil, fmt.Errorf("truncated thumbnail mime at %d", i)
+		}
+		thumbMime := string(data[off : off+thumbMimeLen])
+		off += thumbMimeLen
+		if off+4 > len(data) {
+			return nil, fmt.Errorf("truncated thumbnail b64 length at %d", i)
+		}
+		thumbB64Len := int(binary.BigEndian.Uint32(data[off:]))
+		off += 4
+		if off+thumbB64Len > len(data) {
+			return nil, fmt.Errorf("truncated thumbnail b64 at %d", i)
+		}
+		thumbB64 := string(data[off : off+thumbB64Len])
+		off += thumbB64Len
 
 		m.Channels = append(m.Channels, ChannelInfo{
 			Name:        name,
@@ -218,6 +256,8 @@ func ParseMetadata(data []byte) (*Metadata, error) {
 			ContentHash: contentHash,
 			ChatType:    chatType,
 			CanSend:     chFlags&0x01 != 0,
+			ThumbMIME:   thumbMime,
+			ThumbB64:    thumbB64,
 		})
 	}
 

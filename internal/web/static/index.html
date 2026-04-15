@@ -247,6 +247,15 @@
       background: rgba(255, 255, 255, .2)
     }
 
+    .ch-avatar-fallback {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 18px;
+      font-weight: 600
+    }
+
     .ch-info {
       flex: 1;
       min-width: 0;
@@ -469,6 +478,22 @@
       color: var(--accent);
       font-size: 11px;
       margin-bottom: 6px
+    }
+
+    .media-placeholder {
+      margin: 8px 0;
+      width: 100%;
+      max-width: 360px;
+      aspect-ratio: 16/9;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, #1f2f40 0%, #27384a 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 14px;
+      letter-spacing: .3px
     }
 
     /* ===== SEND PANEL ===== */
@@ -1609,6 +1634,8 @@
     var appVersion = '', latestVersion = '';
     var loadImagesEnabled = false, maxImageKB = 500;
     var profiles = null, activeProfileId = '', editingProfileId = null, resolverScanHint = '', resolverScanHealthy = 0, resolverScanDone = 0, resolverScanTotal = 0;
+    var imageRetryTimers = {};
+    var pendingImageFetchTimers = {};
 
     // ===== MOBILE NAV =====
     function openChat() { if (window.innerWidth <= 768) document.getElementById('app').classList.add('chat-open') }
@@ -2131,8 +2158,10 @@
           var ct2 = e.ch.ChatType || e.ch.chatType || 0;
           var isPriv = e.ch.ChatType === 1 || e.ch.chatType === 1;
           var isX = ct2 === 2;
-          var thumbURL = e.ch.ThumbnailURL || e.ch.thumbnailURL || '';
-          var thumbHash = e.ch.ThumbnailHash || e.ch.thumbnailHash || 0;
+          var thumbMime = e.ch.ThumbMIME || e.ch.thumbMIME || '';
+          var thumbB64 = e.ch.ThumbB64 || e.ch.thumbB64 || '';
+          var thumbURL = (thumbMime.indexOf('image/') === 0 && thumbB64) ? ('data:' + thumbMime + ';base64,' + thumbB64) : '';
+          var thumbHash = (e.ch.ContentHash || e.ch.contentHash || 0) ^ ((thumbB64 && thumbB64.length) || 0);
           if (thumbHash !== channelThumbVersions[num2] || channelThumbURLs[num2] !== thumbURL) {
             channelThumbVersions[num2] = thumbHash;
             channelThumbURLs[num2] = thumbURL;
@@ -2141,7 +2170,8 @@
           var lastID = e.ch.LastMsgID || e.ch.lastMsgID || 0;
           var badge = (previousMsgIDs[num2] > 0 && lastID > previousMsgIDs[num2] && num2 !== selectedChannel) ? '<span class="ch-badge">NEW</span>' : '';
           h += '<div class="ch-item' + active + '" data-name="' + esc(name) + '" onclick="selectChannel(' + num2 + ')">';
-          h += '<img class="ch-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + esc(channelThumbURLs[num2] || '') + '" onerror="this.style.display=\'none\'" />';
+          h += '<img class="ch-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + esc(channelThumbURLs[num2] || '') + '" onload="onRetryableImageLoad(this,\'ch-thumb-' + num2 + '\')" onerror="onRetryableImageError(this,\'ch-thumb-' + num2 + '\')" />';
+          h += '<div class="ch-avatar ch-avatar-fallback" style="display:none">#</div>';
           h += '<div class="ch-info"><div class="ch-name">' + esc(name) + (isPriv ? '<span class="ch-type-tag">' + t('private') + '</span>' : (isX ? '<span class="ch-type-tag x-tag">' + t('x_label') + '</span>' : '')) + '</div>';
           h += '<div class="ch-preview">' + badge + '</div></div></div>';
         }
@@ -2209,10 +2239,29 @@
         var r = await fetch('/api/messages/' + chNum); if (chNum !== selectedChannel) return;
         var data = await r.json(); if (chNum !== selectedChannel) return;
         renderMessages(data.messages || [], data.gaps || []);
+        schedulePendingImageRetry(chNum, data.messages || []);
         // Remove fetch progress bar for this channel
         var fetchBar = document.getElementById('prog-fetch-ch-' + chNum); if (fetchBar) fetchBar.remove();
         if (channels[chNum - 1]) { previousMsgIDs[chNum] = channels[chNum - 1].LastMsgID || channels[chNum - 1].lastMsgID || 0; renderChannels() }
       } catch (e) { }
+    }
+
+    function schedulePendingImageRetry(chNum, msgs) {
+      var hasPending = false;
+      for (var i = 0; i < (msgs || []).length; i++) {
+        var tx = (msgs[i] && (msgs[i].Text || msgs[i].text || '')) || '';
+        if (tx.indexOf('\n[IMG_SRC]') !== -1) { hasPending = true; break }
+      }
+      if (!hasPending) {
+        if (pendingImageFetchTimers[chNum]) { clearTimeout(pendingImageFetchTimers[chNum]); delete pendingImageFetchTimers[chNum] }
+        return;
+      }
+      if (pendingImageFetchTimers[chNum]) return;
+      pendingImageFetchTimers[chNum] = setTimeout(async function () {
+        delete pendingImageFetchTimers[chNum];
+        if (selectedChannel !== chNum) return;
+        try { await doRefresh(true, chNum); await loadMessages(chNum) } catch (e) { schedulePendingImageRetry(chNum, msgs) }
+      }, 4000);
     }
 
     function renderMessages(msgs, gaps) {
@@ -2242,9 +2291,9 @@
         var text = msg.Text || msg.text || '';
         currentMsgTexts.push(text);
         var imageURL = '', imageMime = '', imageB64 = '', imageSize = 0;
-        var markerIdx = text.indexOf('\n[IMG_URL]');
+        var markerIdx = text.indexOf('\n[IMG_SRC]');
         if (markerIdx !== -1) {
-          imageURL = text.substring(markerIdx + '\n[IMG_URL]'.length).trim();
+          imageURL = text.substring(markerIdx + '\n[IMG_SRC]'.length).trim();
           text = text.substring(0, markerIdx);
         }
         var mimeIdx = text.indexOf('\n[IMG_MIME]');
@@ -2275,7 +2324,14 @@
         if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageB64 && imageMime.indexOf('image/') === 0 && (!imageSize || imageSize <= maxImageKB * 1024)) {
           mediaHtml += '<div style="margin:8px 0"><img loading="lazy" src="data:' + esc(imageMime) + ';base64,' + imageB64 + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" /></div>';
         } else if (loadImagesEnabled && text.indexOf('[IMAGE]') === 0 && imageURL.indexOf('https://') === 0) {
-          mediaHtml += '<div class="media-tag" style="margin-top:6px">Image available on source URL</div>';
+          mediaHtml += '<div class="media-tag" style="margin-top:6px">Image is being fetched via DNS…</div>';
+        }
+        if (text.indexOf('[VIDEO]') === 0) {
+          if (loadImagesEnabled && imageB64 && imageMime.indexOf('image/') === 0 && (!imageSize || imageSize <= maxImageKB * 1024)) {
+            mediaHtml += '<div style="margin:8px 0;position:relative;display:inline-block"><img loading="lazy" src="data:' + esc(imageMime) + ';base64,' + imageB64 + '" style="max-width:100%;border-radius:10px;border:1px solid var(--border)" /><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><div style="width:58px;height:58px;border-radius:50%;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px">▶</div></div></div>';
+          } else {
+            mediaHtml += '<div class="media-placeholder">▶ Video</div>';
+          }
         }
         html += '<div class="msg' + (isPersian(text) ? ' rtl-msg' : '') + '" dir="auto">' + mediaHtml + textHtml + '<div class="msg-meta"><button class="msg-copy-btn" onclick="copyMsg(' + i + ')" title="' + t('copy') + '">&#128203;</button><span>#' + id + '</span><span>' + timeStr + '</span></div></div>';
       }
@@ -2589,6 +2645,33 @@
     // ===== UTILITIES =====
     function esc(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s)); return d.innerHTML }
     function isPersian(text) { return text && (text.match(/[\u0600-\u06FF]/g) || []).length > text.length * 0.25 }
+    function retryImageLoad(img, key) {
+      if (!img || !img.dataset) return;
+      var current = parseInt(img.dataset.retryAttempt || '0', 10) || 0;
+      var nextAttempt = current + 1;
+      img.dataset.retryAttempt = '' + nextAttempt;
+      var delay = Math.min(10000, 1000 * Math.max(1, nextAttempt));
+      if (imageRetryTimers[key]) clearTimeout(imageRetryTimers[key]);
+      imageRetryTimers[key] = setTimeout(function () {
+        if (!img || !img.isConnected) return;
+        var src = img.getAttribute('src') || '';
+        var clean = src.split('#retry=')[0];
+        img.setAttribute('src', clean + '#retry=' + Date.now());
+      }, delay);
+    }
+    function onRetryableImageLoad(img, key) {
+      if (!img) return;
+      img.dataset.retryAttempt = '0';
+      if (imageRetryTimers[key]) { clearTimeout(imageRetryTimers[key]); delete imageRetryTimers[key] }
+      var fallback = img.nextElementSibling;
+      if (fallback && fallback.classList && fallback.classList.contains('ch-avatar-fallback')) fallback.style.display = 'none';
+      img.style.display = '';
+    }
+    function onRetryableImageError(img, key) {
+      retryImageLoad(img, key);
+      var fallback = img.nextElementSibling;
+      if (fallback && fallback.classList && fallback.classList.contains('ch-avatar-fallback')) fallback.style.display = 'inline-flex';
+    }
 
     // ===== EVENTS =====
     document.addEventListener('keydown', function (e) {

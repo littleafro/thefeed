@@ -42,7 +42,7 @@ func TestParsePublicMessages(t *testing.T) {
 	if msgs[0].ID != 106 {
 		t.Fatalf("msgs[0].ID = %d, want 106", msgs[0].ID)
 	}
-	want := protocol.MediaImage + "\n" + "photo caption\n[IMG_URL]https://t.me/testchan/106"
+	want := protocol.MediaImage + "\n" + "photo caption\n[IMG_SRC]https://t.me/testchan/106"
 	if msgs[0].Text != want {
 		t.Fatalf("msgs[0].Text = %q, want %q", msgs[0].Text, want)
 	}
@@ -155,14 +155,14 @@ func TestPublicReaderEmbedImagesInMessages(t *testing.T) {
 		t.Fatalf("write cache: %v", err)
 	}
 	msgs := []protocol.Message{
-		{ID: 1, Text: protocol.MediaImage + "\ncaption\n[IMG_URL]" + imageURL},
+		{ID: 1, Text: protocol.MediaImage + "\ncaption\n[IMG_SRC]" + imageURL},
 	}
 	out := pr.embedImagesInMessages(context.Background(), "test-channel", msgs)
 	if len(out) != 1 {
 		t.Fatalf("len(out) = %d, want 1", len(out))
 	}
-	if strings.Contains(out[0].Text, "[IMG_URL]") {
-		t.Fatalf("expected IMG_URL marker to be replaced, got %q", out[0].Text)
+	if strings.Contains(out[0].Text, "[IMG_SRC]") {
+		t.Fatalf("expected IMG_SRC marker to be replaced, got %q", out[0].Text)
 	}
 	if !strings.Contains(out[0].Text, "\n[IMG_MIME]image/webp\n[IMG_SIZE]4\n[IMG_B64]") {
 		t.Fatalf("missing inline image markers, got %q", out[0].Text)
