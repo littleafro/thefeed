@@ -397,7 +397,7 @@ func (pr *PublicReader) compressWebp(src []byte) []byte {
 		return nil
 	}
 	defer os.Remove(in)
-	cmd := exec.Command("cwebp", "-q", "50", "-resize", "0", "50", in, "-o", out)
+	cmd := exec.Command("cwebp", "-q", "10", in, "-o", out)
 	if err := cmd.Run(); err != nil {
 		return nil
 	}
