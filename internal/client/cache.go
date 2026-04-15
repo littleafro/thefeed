@@ -159,6 +159,26 @@ func (c *Cache) PutMetadata(meta *protocol.Metadata) error {
 	return os.WriteFile(filepath.Join(c.dir, "metadata.json"), data, 0600)
 }
 
+// GetMetadata reads the cached metadata snapshot.
+// Returns nil if the snapshot is missing or invalid.
+func (c *Cache) GetMetadata() *protocol.Metadata {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, err := os.ReadFile(filepath.Join(c.dir, "metadata.json"))
+	if err != nil {
+		return nil
+	}
+	var cached cachedMeta
+	if err := json.Unmarshal(data, &cached); err != nil {
+		return nil
+	}
+	if cached.Metadata == nil {
+		return nil
+	}
+	return cached.Metadata
+}
+
 // Cleanup removes channel cache files (ch_*.json) not modified in 7 days.
 func (c *Cache) Cleanup() error {
 	c.mu.Lock()

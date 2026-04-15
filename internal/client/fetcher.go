@@ -539,27 +539,52 @@ func (f *Fetcher) FetchMetadata(ctx context.Context) (*protocol.Metadata, error)
 	if err == nil {
 		return meta, nil
 	}
+	if !isTruncatedMetadataError(err) {
+		return nil, fmt.Errorf("could not parse metadata: %w", err)
+	}
 
 	// Metadata may span multiple blocks.
 	allData := make([]byte, len(data))
 	copy(allData, data)
+	lastParseErr := err
 
-	for blk := uint16(1); blk < 10; blk++ {
+	for blk := uint16(1); blk < 16; blk++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		block, fetchErr := f.FetchBlock(ctx, protocol.MetadataChannel, blk)
+		var (
+			block    []byte
+			fetchErr error
+		)
+		for attempt := 0; attempt < 3; attempt++ {
+			block, fetchErr = f.FetchBlock(ctx, protocol.MetadataChannel, blk)
+			if fetchErr == nil {
+				break
+			}
+		}
 		if fetchErr != nil {
-			break
+			return nil, fmt.Errorf("could not parse metadata: %w (failed fetching metadata block %d: %v)", lastParseErr, blk, fetchErr)
 		}
 		allData = append(allData, block...)
 		meta, parseErr := protocol.ParseMetadata(allData)
 		if parseErr == nil {
 			return meta, nil
 		}
+		lastParseErr = parseErr
+		if !isTruncatedMetadataError(parseErr) {
+			return nil, fmt.Errorf("could not parse metadata: %w", parseErr)
+		}
 	}
 
-	return nil, fmt.Errorf("could not parse metadata: %w", err)
+	return nil, fmt.Errorf("could not parse metadata: %w", lastParseErr)
+}
+
+func isTruncatedMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "metadata too short") || strings.Contains(msg, "truncated ")
 }
 
 // FetchLatestVersion fetches the latest release version from the dedicated
