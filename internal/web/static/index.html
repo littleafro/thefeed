@@ -1637,7 +1637,12 @@
         if (channels && channels.length > 0) await selectChannel(1);
         else { showInitProgress(); await doRefresh(); openChat() }
         startAutoRefresh();
-      } catch (e) { }
+      } catch (e) {
+        if (channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
+      }
     }
 
     // ===== FONT SIZE =====
@@ -1656,7 +1661,12 @@
         document.getElementById('cfgMaxImageKB').value = maxImageKB;
         if (s.version) { appVersion = s.version; renderAppVersion(s.version, s.commit); }
         renderLatestVersion();
-      } catch (e) { }
+      } catch (e) {
+        if (channelNum) {
+          channelRefreshInFlight[channelNum] = false;
+          if (refreshQueue.indexOf(channelNum) === -1) refreshQueue.push(channelNum);
+        }
+      }
     }
 
     function renderAppVersion(v, commit) {
