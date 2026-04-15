@@ -1782,7 +1782,7 @@
           await selectChannel(1); return
         }
         if (data && typeof data === 'object' && data.channel) {
-          markChannelRefreshDone(data.channel);
+          if (!data.partial) markChannelRefreshDone(data.channel);
           if (data.channel === snapChannel) await loadMessages(data.channel)
         } else if (snapChannel > 0) { await loadMessages(snapChannel) }
         updateSendPanel();

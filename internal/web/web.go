@@ -1065,7 +1065,12 @@ func (s *Server) refreshChannel(channelNum int) bool {
 
 	var msgs []protocol.Message
 	var err error
-	msgs, err = fetcher.FetchChannel(fetchCtx, channelNum, blockCount)
+	msgs, err = fetcher.FetchChannelStream(fetchCtx, channelNum, blockCount, func(partial []protocol.Message) {
+		s.mu.Lock()
+		s.messages[channelNum] = partial
+		s.mu.Unlock()
+		s.broadcast(fmt.Sprintf("event: update\ndata: {\"type\":\"messages\",\"channel\":%d,\"partial\":true}\n\n", channelNum))
+	})
 	if err != nil {
 		if fetchCancel != nil && fetchCtx.Err() == context.DeadlineExceeded {
 			// nextFetch fired mid-download — wait for the server, then re-fetch.

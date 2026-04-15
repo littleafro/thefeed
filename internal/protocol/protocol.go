@@ -280,6 +280,14 @@ func ParseMessages(data []byte) ([]Message, error) {
 	return msgs, nil
 }
 
+// ParseMessagesPartial decodes as many complete messages as possible from data.
+// It is tolerant to truncated tails and is useful for progressive rendering while
+// the channel payload is still downloading.
+func ParseMessagesPartial(data []byte) []Message {
+	msgs, _ := ParseMessages(data)
+	return msgs
+}
+
 // SplitIntoBlocks splits data into blocks of randomly varying size in [MinBlockPayload, MaxBlockPayload].
 // Random sizes make traffic analysis harder; the client just concatenates all blocks to reassemble.
 func SplitIntoBlocks(data []byte) [][]byte {
@@ -391,6 +399,28 @@ func DecompressMessages(data []byte) ([]byte, error) {
 		defer r.Close()
 		out, err := io.ReadAll(r)
 		if err != nil {
+			return nil, fmt.Errorf("deflate decompress: %w", err)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unknown compression type: 0x%02x", data[0])
+	}
+}
+
+// DecompressMessagesPartial is tolerant to truncated compressed payloads and
+// returns any decompressed prefix that can be recovered.
+func DecompressMessagesPartial(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty compressed data")
+	}
+	switch data[0] {
+	case compressionNone:
+		return data[1:], nil
+	case compressionDeflate:
+		r := flate.NewReader(bytes.NewReader(data[1:]))
+		defer r.Close()
+		out, err := io.ReadAll(r)
+		if err != nil && len(out) == 0 {
 			return nil, fmt.Errorf("deflate decompress: %w", err)
 		}
 		return out, nil

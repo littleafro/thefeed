@@ -577,10 +577,16 @@ func (f *Fetcher) FetchLatestVersion(ctx context.Context) (string, error) {
 // Cancelling ctx immediately aborts any queued or in-flight block fetches.
 // Each block is retried individually via FetchBlock before the channel fetch fails.
 func (f *Fetcher) FetchChannel(ctx context.Context, channelNum int, blockCount int) ([]protocol.Message, error) {
-	return f.fetchChannelBlocks(ctx, channelNum, blockCount, f.FetchBlock)
+	return f.fetchChannelBlocks(ctx, channelNum, blockCount, f.FetchBlock, nil)
 }
 
-func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockCount int, fetchFn func(context.Context, uint16, uint16) ([]byte, error)) ([]protocol.Message, error) {
+// FetchChannelStream fetches a channel and emits progressively parseable messages
+// as contiguous block prefixes become available.
+func (f *Fetcher) FetchChannelStream(ctx context.Context, channelNum int, blockCount int, onPartial func([]protocol.Message)) ([]protocol.Message, error) {
+	return f.fetchChannelBlocks(ctx, channelNum, blockCount, f.FetchBlock, onPartial)
+}
+
+func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockCount int, fetchFn func(context.Context, uint16, uint16) ([]byte, error), onPartial func([]protocol.Message)) ([]protocol.Message, error) {
 	if blockCount <= 0 {
 		return nil, nil
 	}
@@ -628,9 +634,12 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 	ordered := make([][]byte, blockCount)
 	copy(ordered, state.blocks)
 	completed := 0
+	lastContiguous := 0
+	lastPartialCount := 0
 	for i := 0; i < blockCount; i++ {
 		if state.have[i] {
 			completed++
+			lastContiguous++
 		}
 	}
 	for r := range results {
@@ -653,6 +662,25 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 		f.partialMu.Unlock()
 		completed++
 		f.logProgress(fmt.Sprintf("Channel %d (%d/%d)", channelNum, completed, blockCount), float64(completed), float64(blockCount))
+
+		if onPartial != nil {
+			for lastContiguous < blockCount && ordered[lastContiguous] != nil {
+				lastContiguous++
+			}
+			if lastContiguous > 0 {
+				var prefix []byte
+				for i := 0; i < lastContiguous; i++ {
+					prefix = append(prefix, ordered[i]...)
+				}
+				if decompressed, derr := protocol.DecompressMessagesPartial(prefix); derr == nil {
+					partial := protocol.ParseMessagesPartial(decompressed)
+					if len(partial) > lastPartialCount {
+						lastPartialCount = len(partial)
+						onPartial(partial)
+					}
+				}
+			}
+		}
 	}
 
 	var allData []byte
