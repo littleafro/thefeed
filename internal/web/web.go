@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"log"
@@ -115,8 +116,6 @@ type Server struct {
 
 	stopRefresh chan struct{}
 	autoOnce    sync.Once
-
-	scanner *client.ResolverScanner
 }
 
 // New creates a new web server.
@@ -132,8 +131,6 @@ func New(dataDir string, port int, password string) (*Server, error) {
 		}
 	}()
 
-	scanner := client.NewResolverScanner()
-
 	s := &Server{
 		dataDir:         dataDir,
 		port:            port,
@@ -143,7 +140,6 @@ func New(dataDir string, port int, password string) (*Server, error) {
 		channelFetching: make(map[int]bool),
 		lastMsgIDs:      make(map[int]uint32),
 		lastHashes:      make(map[int]uint32),
-		scanner:         scanner,
 	}
 
 	cfg, err := s.loadConfig()
@@ -194,13 +190,6 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/version-check", s.handleVersionCheck)
 	mux.HandleFunc("/api/cache/clear", s.handleClearCache)
 	mux.HandleFunc("/api/resolvers/apply-saved", s.handleApplySavedResolvers)
-	mux.HandleFunc("/api/scanner/start", s.handleScannerStart)
-	mux.HandleFunc("/api/scanner/stop", s.handleScannerStop)
-	mux.HandleFunc("/api/scanner/pause", s.handleScannerPause)
-	mux.HandleFunc("/api/scanner/resume", s.handleScannerResume)
-	mux.HandleFunc("/api/scanner/progress", s.handleScannerProgress)
-	mux.HandleFunc("/api/scanner/apply", s.handleScannerApply)
-	mux.HandleFunc("/api/scanner/presets", s.handleScannerPresets)
 	mux.HandleFunc("/", s.handleIndex)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
@@ -332,8 +321,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	writeJSON(w, s.channels)
+	channels := make([]protocol.ChannelInfo, len(s.channels))
+	copy(channels, s.channels)
+	s.mu.RUnlock()
+
+	type channelView struct {
+		protocol.ChannelInfo
+		ThumbnailURL  string `json:"thumbnailURL,omitempty"`
+		ThumbnailHash uint32 `json:"thumbnailHash,omitempty"`
+	}
+	out := make([]channelView, 0, len(channels))
+	for _, ch := range channels {
+		thumbURL := channelThumbnailURL(ch)
+		out = append(out, channelView{ChannelInfo: ch, ThumbnailURL: thumbURL, ThumbnailHash: crc32.ChecksumIEEE([]byte(thumbURL))})
+	}
+	writeJSON(w, out)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -682,7 +684,6 @@ func (s *Server) initFetcher() error {
 		debug = pl.Debug
 	}
 	fetcher.SetDebug(debug)
-	s.scanner.SetDebug(debug)
 	if cfg.RateLimit > 0 {
 		fetcher.SetRateLimit(cfg.RateLimit)
 	}
@@ -747,7 +748,6 @@ func (s *Server) checkLatestVersion(ctx context.Context) (string, error) {
 		debug = pl.Debug
 	}
 	fetcher.SetDebug(debug)
-	s.scanner.SetDebug(debug)
 	if cfg.RateLimit > 0 {
 		fetcher.SetRateLimit(cfg.RateLimit)
 	}
@@ -1207,6 +1207,22 @@ func (s *Server) saveConfig(cfg *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+func channelThumbnailURL(ch protocol.ChannelInfo) string {
+	name := strings.TrimSpace(ch.Name)
+	name = strings.TrimPrefix(name, "@")
+	if ch.ChatType == protocol.ChatTypeX {
+		name = strings.TrimPrefix(strings.ToLower(name), "x/")
+		if name == "" {
+			return ""
+		}
+		return "https://unavatar.io/x/" + url.PathEscape(name)
+	}
+	if name == "" {
+		return ""
+	}
+	return "https://t.me/i/userpic/320/" + url.PathEscape(name) + ".jpg"
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -1479,7 +1495,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if f != nil {
 			f.SetDebug(req.Debug)
 		}
-		s.scanner.SetDebug(req.Debug)
 		writeJSON(w, map[string]any{"ok": true})
 
 	default:

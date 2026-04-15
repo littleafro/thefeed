@@ -238,13 +238,9 @@
       height: 44px;
       border-radius: 50%;
       background: var(--surface2);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 17px;
-      color: var(--text-dim);
-      flex-shrink: 0;
-      font-weight: 600
+      display: block;
+      object-fit: cover;
+      flex-shrink: 0
     }
 
     .ch-item.active .ch-avatar {
@@ -1304,8 +1300,7 @@
             <span class="profile-btn-arrow"><span class="plus">+</span>&#9660;</span>
           </button>
           <button class="icon-btn" onclick="openSettings()" title="Settings" data-i18n-title="settings">&#9881;</button>
-          <button class="icon-btn" id="scannerIconBtn" onclick="openScanner()" title="Scanner" data-i18n-title="scanner_title" style="font-size:18px">&#128269;</button>
-          <button class="icon-btn" onclick="jumpToLog()" title="LOG">&#128220;</button>
+                    <button class="icon-btn" onclick="jumpToLog()" title="LOG">&#128220;</button>
         </div>
         <input class="sidebar-search" id="channelSearch" type="text" data-i18n-ph="search" placeholder="Search..."
           oninput="filterChannels()">
@@ -1364,7 +1359,6 @@
       <p id="savedResolversMsg" style="font-size:13px;color:var(--text-dim);margin-bottom:16px;line-height:1.6"></p>
       <div class="modal-actions">
         <button class="btn btn-flat" onclick="savedResolversSkip()" data-i18n="saved_resolvers_skip">Skip</button>
-        <button class="btn btn-outline" onclick="savedResolversRescan()" data-i18n="saved_resolvers_rescan">Scan
           Again</button>
         <button class="btn btn-primary" onclick="savedResolversUseNow()" data-i18n="saved_resolvers_use">Use
           Now</button>
@@ -1497,125 +1491,8 @@
         <button class="btn btn-flat" onclick="closeProfileEditor()" data-i18n="cancel">Cancel</button>
         <button class="btn btn-danger" id="peDeleteBtn" style="display:none" onclick="deleteEditingProfile()"
           data-i18n="delete">Delete</button>
-        <button class="btn btn-outline" id="peScannerBtn" style="display:none" onclick="openScannerFromProfile()"
-          data-i18n="scanner_find_resolvers">&#128269; Find Resolvers</button>
+        
         <button class="btn btn-primary" onclick="saveProfile()" data-i18n="save">Save</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== SCANNER MODAL ===== -->
-  <div class="modal-overlay" id="scannerModal">
-    <div class="modal" style="max-width:520px">
-      <h2 data-i18n="scanner_title">&#128269; Resolver Scanner</h2>
-
-      <!-- Collapsible help -->
-      <div style="margin-bottom:14px">
-        <p id="scannerAboutShort" style="font-size:13px;color:var(--text-dim);line-height:1.5;margin:0">
-          <span data-i18n="scanner_about_short">Scan IP ranges to find DNS resolvers that work with your server.</span>
-          <a href="#" id="scannerReadMoreLink" onclick="event.preventDefault();document.getElementById('scannerAboutFull').style.display='';this.style.display='none'" style="color:var(--accent);text-decoration:none" data-i18n="scanner_read_more">Read more...</a>
-        </p>
-        <p id="scannerAboutFull" style="display:none;font-size:12px;color:var(--text-dim);line-height:1.6;margin:0"><span data-i18n="scanner_about">This tool scans IP ranges to find DNS servers that can reach your thefeed server. Enter CIDRs (like 192.168.1.0/24) or individual IPs, pick a profile, and hit Scan. The app sends a small test query to each IP. If the IP answers correctly, it is a working resolver. You can also turn on "Expand /24" — when a working IP is found, the app will automatically check nearby IPs in the same network. Results show response time so you can pick the fastest ones. You can pause, resume, or stop the scan at any time.</span> <a href="#" onclick="event.preventDefault();document.getElementById('scannerAboutFull').style.display='none';document.getElementById('scannerReadMoreLink').style.display=''" style="color:var(--accent);text-decoration:none" data-i18n="scanner_read_less">Show less</a></p>
-      </div>
-
-      <!-- Config section -->
-      <div id="scannerConfig">
-        <div class="form-group">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-            <label data-i18n="scanner_targets">IPs or CIDRs (one per line)</label>
-            <button class="btn btn-flat" onclick="loadScannerPresets()" data-i18n="scanner_load_presets" style="font-size:12px;padding:4px 10px">🇮🇷 IR</button>
-          </div>
-          <textarea id="scanTargets" rows="3" placeholder="5.1.0.0/16&#10;8.8.8.8&#10;1.1.1.1" style="width:100%;font-family:monospace;font-size:13px"></textarea>
-        </div>
-        <div class="form-group">
-          <label data-i18n="scanner_profile">Profile</label>
-          <select id="scanProfile" style="width:100%"></select>
-        </div>
-        <details style="margin-bottom:12px">
-          <summary style="cursor:pointer;font-size:13px;color:var(--text-dim);user-select:none" data-i18n="scanner_advanced">Advanced options</summary>
-          <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <div class="form-group">
-              <label data-i18n="query_mode">Query Mode</label>
-              <select id="scanQueryMode" style="width:100%">
-                <option value="single">Single label</option>
-                <option value="double">Multi-label</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label data-i18n="scanner_rate_limit">Concurrency</label>
-              <input type="number" id="scanRateLimit" value="50" min="1" max="500">
-            </div>
-            <div class="form-group">
-              <label data-i18n="scanner_timeout">Timeout (s)</label>
-              <input type="number" id="scanTimeout" value="15" min="1" max="60">
-            </div>
-            <div class="form-group">
-              <label data-i18n="scanner_max_ips">Max IPs (0=all)</label>
-              <input type="number" id="scanMaxIPs" value="0" min="0">
-            </div>
-          </div>
-          <div class="form-group" style="margin-top:4px">
-            <div class="row" style="gap:6px;align-items:center">
-              <input type="checkbox" id="scanExpand">
-              <label for="scanExpand" style="font-size:13px" data-i18n="scanner_expand_subnet">Expand /24 — scan nearby IPs when a resolver is found</label>
-            </div>
-          </div>
-        </details>
-      </div>
-
-      <!-- Progress section -->
-      <div id="scannerProgressSection" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <div style="font-size:14px;color:var(--text)">
-            <strong id="scanStatusLabel">-</strong>
-          </div>
-          <div style="font-size:13px;color:var(--text-dim)">
-            <span id="scanProgressText">0 / 0</span> &mdash; <span id="scanFoundText">0</span> <span data-i18n="scanner_found">found</span>
-          </div>
-        </div>
-        <div style="height:6px;border-radius:3px;margin-bottom:14px;background:var(--border);overflow:hidden">
-          <div id="scanProgressFill" style="width:0%;height:100%;border-radius:3px;background:var(--accent);transition:width .3s"></div>
-        </div>
-      </div>
-
-      <!-- Results section -->
-      <div id="scannerResults" style="display:none;max-height:220px;overflow-y:auto;margin-bottom:14px;border:1px solid var(--border);border-radius:8px">
-        <table style="width:100%;font-size:13px;border-collapse:collapse">
-          <thead><tr style="background:var(--bg);position:sticky;top:0;z-index:1">
-            <th style="padding:8px;text-align:left;width:32px"><input type="checkbox" id="scanSelectAll" checked onchange="toggleScanSelectAll(this.checked)"></th>
-            <th style="padding:8px;text-align:left">IP</th>
-            <th style="padding:8px;text-align:right" data-i18n="scanner_latency">ms</th>
-            <th style="padding:8px;width:36px"></th>
-          </tr></thead>
-          <tbody id="scanResultsBody"></tbody>
-        </table>
-      </div>
-
-      <!-- Action bar -->
-      <div id="scannerApplySection" style="display:none;margin-bottom:14px">
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary" style="flex:1;min-width:0;padding:10px 0;font-size:14px" onclick="applyScanResults('append')">
-            <span data-i18n="scanner_append">Append</span> <span id="scanAppendCount" style="opacity:.7"></span>
-          </button>
-          <button class="btn btn-outline" style="flex:1;min-width:0;padding:10px 0;font-size:14px" onclick="applyScanResults('overwrite')">
-            <span data-i18n="scanner_overwrite">Overwrite</span> <span id="scanOverwriteCount" style="opacity:.7"></span>
-          </button>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button class="btn btn-flat" style="flex:1;padding:8px 0;font-size:13px" onclick="copySelectedScanResults()">
-            <span data-i18n="copy">Copy</span> <span id="scanCopyCount" style="opacity:.7"></span>
-          </button>
-          <button class="btn btn-flat" style="flex:1;padding:8px 0;font-size:13px" onclick="copyAllScanResults()" data-i18n="scanner_copy_all">Copy All</button>
-          <button class="btn btn-outline" style="flex:1;padding:8px 0;font-size:13px;font-weight:600" onclick="resetScannerUI()" data-i18n="scanner_new_scan">&#8634; New Scan</button>
-        </div>
-      </div>
-
-      <div class="modal-actions" style="gap:8px;flex-wrap:wrap">
-        <button class="btn btn-flat" onclick="closeScanner()" data-i18n="close" style="padding:10px 20px;font-size:14px">Close</button>
-        <div style="flex:1"></div>
-        <button class="btn btn-outline" id="scanPauseBtn" style="display:none;padding:10px 20px;font-size:14px" onclick="toggleScanPause()" data-i18n="scanner_pause">Pause</button>
-        <button class="btn btn-danger" id="scanStopBtn" style="display:none;padding:10px 20px;font-size:14px" onclick="stopScan()" data-i18n="scanner_stop">Stop</button>
-        <button class="btn btn-primary" id="scanStartBtn" onclick="startScan()" data-i18n="scanner_start" style="padding:10px 24px;font-size:14px">Start Scan</button>
       </div>
     </div>
   </div>
@@ -1666,43 +1543,10 @@
         saved_resolvers_title: 'شروع سریع',
         saved_resolvers_msg: 'آخرین اسکن ({t}) نتیجه داد: {n} سرور DNS سالم پیدا شد. همین‌ها را استفاده کنیم یا دوباره اسکن کنیم؟',
         saved_resolvers_use: 'استفاده کن (بدون اسکن)',
-        saved_resolvers_rescan: 'اسکن مجدد',
         saved_resolvers_skip: 'بعداً',
         saved_resolvers_applied: 'سرورهای DNS ذخیره‌شده اعمال شدند',
         minutes_ago: 'دقیقه پیش',
         hours_ago: 'ساعت پیش',
-        scanner_title: '\uD83D\uDD0D اسکنر ریزالور',
-        scanner_about: 'این ابزار بازه‌های IP را برای پیدا کردن سرورهای DNS که به سرور thefeed شما دسترسی دارند اسکن می‌کند. CIDR (مثل 192.168.1.0/24) یا IP وارد کنید، پروفایل را انتخاب کنید و اسکن را شروع کنید. برنامه یک کوئری آزمایشی کوچک به هر IP می‌فرستد. اگر جواب درست بدهد، یک ریزالور کار‌آمد است. می‌توانید «گسترش /24» را فعال کنید — وقتی یک IP کارآمد پیدا شد، آی‌پی‌های نزدیک هم بررسی می‌شوند. نتایج زمان پاسخ‌دهی را نشان می‌دهند تا بتوانید سریع‌ترین‌ها را انتخاب کنید. می‌توانید هر زمان اسکن را متوقف، مکث یا ادامه دهید.',
-        scanner_targets: 'آی‌پی یا CIDR (هر خط یکی)',
-        scanner_profile: 'پروفایل',
-        scanner_rate_limit: 'همزمانی',
-        scanner_timeout: 'تایم‌اوت (ثانیه)',
-        scanner_max_ips: 'حداکثر آی‌پی (0=همه)',
-        scanner_expand_subnet: 'گسترش /24 — وقتی ریزالور کارآمد پیدا شد آی‌پی‌های نزدیک هم بررسی شوند',
-        scanner_status: 'وضعیت',
-        scanner_found: 'پیدا شده',
-        scanner_latency: 'زمان پاسخ',
-        scanner_append: 'افزودن به تنظیمات',
-        scanner_overwrite: 'جایگزینی تنظیمات',
-        scanner_start: 'شروع اسکن',
-        scanner_stop: 'توقف',
-        scanner_pause: 'مکث',
-        scanner_resume: 'ادامه',
-        scanner_find_resolvers: '\uD83D\uDD0D پیدا کردن ریزالور',
-        scanner_running: 'در حال اسکن',
-        scanner_paused: 'مکث شده',
-        scanner_done: 'تمام شد',
-        scanner_idle: 'آماده',
-        scanner_applied: 'ریزالورها اعمال شدند',
-        scanner_no_results: 'هیچ ریزالور کارآمدی پیدا نشد',
-        scanner_already_running: 'اسکنر در حال اجراست',
-        scanner_about_short: 'بازه‌های IP را اسکن کنید تا ریزالورهای DNS سازگار با سرور شما پیدا شوند.',
-        scanner_read_more: 'بیشتر بخوانید...',
-        scanner_read_less: 'بستن',
-        scanner_load_presets: '\uD83C\uDDEE\uD83C\uDDF7 بارگذاری لیست ایران',
-        scanner_new_scan: 'اسکن جدید',
-        scanner_advanced: 'تنظیمات پیشرفته',
-        scanner_copy_all: 'کپی همه',
       },
       en: {
         search: 'Search...', settings: 'Settings', profiles: 'Profiles',
@@ -1747,43 +1591,10 @@
         saved_resolvers_title: 'Quick Start',
         saved_resolvers_msg: 'Last scan ({t}) found {n} healthy DNS servers. Use them now (no scan needed), or scan again to re-verify.',
         saved_resolvers_use: 'Use Now (skip scan)',
-        saved_resolvers_rescan: 'Scan Again',
         saved_resolvers_skip: 'Later',
         saved_resolvers_applied: 'Saved DNS servers applied!',
         minutes_ago: 'min ago',
         hours_ago: 'hr ago',
-        scanner_title: '\uD83D\uDD0D Resolver Scanner',
-        scanner_about: 'This tool scans IP ranges to find DNS servers that can reach your thefeed server. Enter CIDRs (like 192.168.1.0/24) or individual IPs, pick a profile, and hit Scan. The app sends a small test query to each IP. If the IP answers correctly, it is a working resolver. You can also turn on "Expand /24" — when a working IP is found, the app will automatically check nearby IPs in the same network. Results show response time so you can pick the fastest ones. You can pause, resume, or stop the scan at any time.',
-        scanner_targets: 'IPs or CIDRs (one per line)',
-        scanner_profile: 'Profile',
-        scanner_rate_limit: 'Concurrency',
-        scanner_timeout: 'Timeout (s)',
-        scanner_max_ips: 'Max IPs (0=all)',
-        scanner_expand_subnet: 'Expand /24 — scan nearby IPs when a working resolver is found',
-        scanner_status: 'Status',
-        scanner_found: 'found',
-        scanner_latency: 'Latency',
-        scanner_append: 'Append to Config',
-        scanner_overwrite: 'Overwrite Config',
-        scanner_start: 'Start Scan',
-        scanner_stop: 'Stop',
-        scanner_pause: 'Pause',
-        scanner_resume: 'Resume',
-        scanner_find_resolvers: '\uD83D\uDD0D Find Resolvers',
-        scanner_running: 'Running',
-        scanner_paused: 'Paused',
-        scanner_done: 'Done',
-        scanner_idle: 'Ready',
-        scanner_applied: 'Resolvers applied',
-        scanner_no_results: 'No working resolvers found',
-        scanner_already_running: 'Scanner is already running',
-        scanner_about_short: 'Scan IP ranges to find DNS resolvers that work with your server.',
-        scanner_read_more: 'Read more...',
-        scanner_read_less: 'Show less',
-        scanner_load_presets: '\uD83C\uDDEE\uD83C\uDDF7 Load IR Presets',
-        scanner_new_scan: 'New Scan',
-        scanner_advanced: 'Advanced options',
-        scanner_copy_all: 'Copy All',
       }
     };
     var lang = localStorage.getItem('thefeed_lang') || 'fa';
@@ -1806,6 +1617,7 @@
     // ===== STATE =====
     var selectedChannel = 0, channels = [], eventSource = null, autoRefreshTimer = null, telegramLoggedIn = false, logVisible = false;
     var lastRefreshAt = 0, previousMsgIDs = {}, currentMsgTexts = [];
+    var channelThumbVersions = {}, channelThumbURLs = {};
     var nextAutoRefreshAt = 0, nextAutoRefreshInterval = null;
     var appVersion = '', latestVersion = '';
     var loadImagesEnabled = false, maxImageKB = 500;
@@ -2342,15 +2154,17 @@
           var ct2 = e.ch.ChatType || e.ch.chatType || 0;
           var isPriv = e.ch.ChatType === 1 || e.ch.chatType === 1;
           var isX = ct2 === 2;
-          var avatarName = name;
-          if (isX && avatarName.toLowerCase().indexOf('x/') === 0) avatarName = avatarName.substring(2);
-          if (avatarName.charAt(0) === '@') avatarName = avatarName.substring(1);
-          var avatarText = (avatarName || '?').charAt(0).toUpperCase();
+          var thumbURL = e.ch.ThumbnailURL || e.ch.thumbnailURL || '';
+          var thumbHash = e.ch.ThumbnailHash || e.ch.thumbnailHash || 0;
+          if (thumbHash !== channelThumbVersions[num2] || channelThumbURLs[num2] !== thumbURL) {
+            channelThumbVersions[num2] = thumbHash;
+            channelThumbURLs[num2] = thumbURL;
+          }
           var active = num2 === selectedChannel ? ' active' : '';
           var lastID = e.ch.LastMsgID || e.ch.lastMsgID || 0;
           var badge = (previousMsgIDs[num2] > 0 && lastID > previousMsgIDs[num2] && num2 !== selectedChannel) ? '<span class="ch-badge">NEW</span>' : '';
           h += '<div class="ch-item' + active + '" data-name="' + esc(name) + '" onclick="selectChannel(' + num2 + ')">';
-          h += '<div class="ch-avatar">' + esc(avatarText) + '</div>';
+          h += '<img class="ch-avatar" loading="lazy" referrerpolicy="no-referrer" src="' + esc(channelThumbURLs[num2] || '') + '" onerror="this.style.display=\'none\'" />';
           h += '<div class="ch-info"><div class="ch-name">' + esc(name) + (isPriv ? '<span class="ch-type-tag">' + t('private') + '</span>' : (isX ? '<span class="ch-type-tag x-tag">' + t('x_label') + '</span>' : '')) + '</div>';
           h += '<div class="ch-preview">' + badge + '</div></div></div>';
         }
@@ -2761,271 +2575,11 @@
     function esc(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s)); return d.innerHTML }
     function isPersian(text) { return text && (text.match(/[\u0600-\u06FF]/g) || []).length > text.length * 0.25 }
 
-    // ===== SCANNER =====
-    var scanPollTimer = null;
-    var scanLastResults = []; // cache for selection
-
-    function openScanner() {
-      document.getElementById('scannerModal').classList.add('active');
-      populateScanProfileSelect();
-      pollScannerOnce();
-    }
-    function closeScanner() {
-      document.getElementById('scannerModal').classList.remove('active');
-      if (scanPollTimer) { clearInterval(scanPollTimer); scanPollTimer = null }
-    }
-    function openScannerFromProfile() {
-      var profileId = editingProfileId;
-      closeProfileEditor();
-      openScanner();
-      if (profileId) {
-        var sel = document.getElementById('scanProfile');
-        for (var i = 0; i < sel.options.length; i++) {
-          if (sel.options[i].value === profileId) { sel.selectedIndex = i; break }
-        }
-      }
-    }
-
-    function populateScanProfileSelect() {
-      var sel = document.getElementById('scanProfile');
-      sel.innerHTML = '';
-      if (profiles && profiles.profiles) {
-        for (var i = 0; i < profiles.profiles.length; i++) {
-          var p = profiles.profiles[i];
-          var opt = document.createElement('option');
-          opt.value = p.id;
-          opt.textContent = p.nickname || p.id;
-          if (p.id === activeProfileId) opt.selected = true;
-          sel.appendChild(opt);
-        }
-      }
-    }
-
-    async function loadScannerPresets() {
-      try {
-        var r = await fetch('/api/scanner/presets');
-        if (!r.ok) return;
-        var lines = await r.json();
-        if (lines && lines.length) {
-          var el = document.getElementById('scanTargets');
-          var existing = el.value.trim();
-          el.value = existing ? existing + '\n' + lines.join('\n') : lines.join('\n');
-        }
-      } catch (e) { showToast(e.message) }
-    }
-
-    async function startScan() {
-      var targets = document.getElementById('scanTargets').value.trim().split('\n').filter(function (s) { return s.trim() });
-      if (!targets.length) { showToast(t('scanner_targets')); return }
-      // Clear stale results from previous scan.
-      scanLastResults = [];
-      document.getElementById('scanResultsBody').innerHTML = '';
-      document.getElementById('scannerApplySection').style.display = 'none';
-      var body = {
-        targets: targets,
-        profileId: document.getElementById('scanProfile').value,
-        rateLimit: parseInt(document.getElementById('scanRateLimit').value) || 50,
-        timeout: parseInt(document.getElementById('scanTimeout').value) || 15,
-        maxIPs: parseInt(document.getElementById('scanMaxIPs').value) || 0,
-        expandSubnet: document.getElementById('scanExpand').checked,
-        queryMode: document.getElementById('scanQueryMode').value
-      };
-      try {
-        var r = await fetch('/api/scanner/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!r.ok) { showToast(await r.text() || 'Failed to start'); return }
-        showScanRunning();
-        startScanPolling();
-      } catch (e) { showToast(e.message) }
-    }
-
-    async function stopScan() {
-      try { await fetch('/api/scanner/stop', { method: 'POST' }) } catch (e) {}
-      if (scanPollTimer) { clearInterval(scanPollTimer); scanPollTimer = null }
-      setTimeout(pollScannerOnce, 300);
-    }
-
-    async function toggleScanPause() {
-      var btn = document.getElementById('scanPauseBtn');
-      var isPaused = btn.dataset.paused === '1';
-      try {
-        await fetch('/api/scanner/' + (isPaused ? 'resume' : 'pause'), { method: 'POST' });
-        pollScannerOnce();
-      } catch (e) {}
-    }
-
-    function showScanRunning() {
-      document.getElementById('scannerConfig').style.display = 'none';
-      document.getElementById('scannerProgressSection').style.display = '';
-      document.getElementById('scannerResults').style.display = '';
-      document.getElementById('scanStartBtn').style.display = 'none';
-      document.getElementById('scanStopBtn').style.display = '';
-      document.getElementById('scanPauseBtn').style.display = '';
-      document.getElementById('scannerApplySection').style.display = 'none';
-      document.getElementById('scannerIconBtn').classList.add('scanning');
-    }
-
-    function showScanIdle() {
-      document.getElementById('scannerConfig').style.display = '';
-      document.getElementById('scannerProgressSection').style.display = 'none';
-      document.getElementById('scannerResults').style.display = 'none';
-      document.getElementById('scannerApplySection').style.display = 'none';
-      document.getElementById('scanStartBtn').style.display = '';
-      document.getElementById('scanStartBtn').textContent = t('scanner_start');
-      document.getElementById('scanStopBtn').style.display = 'none';
-      document.getElementById('scanPauseBtn').style.display = 'none';
-      document.getElementById('scannerIconBtn').classList.remove('scanning');
-    }
-
-    function resetScannerUI() {
-      showScanIdle();
-      document.getElementById('scannerAboutFull').style.display = 'none';
-      document.getElementById('scannerAboutShort').querySelector('a').style.display = '';
-    }
-
-    function showScanDone(progress) {
-      document.getElementById('scannerConfig').style.display = 'none';
-      document.getElementById('scannerProgressSection').style.display = '';
-      document.getElementById('scannerResults').style.display = '';
-      document.getElementById('scanStartBtn').style.display = 'none';
-      document.getElementById('scanStopBtn').style.display = 'none';
-      document.getElementById('scanPauseBtn').style.display = 'none';
-      document.getElementById('scannerIconBtn').classList.remove('scanning');
-      // Always show the apply section (it has the New Scan button).
-      document.getElementById('scannerApplySection').style.display = '';
-      if (progress && progress.results && progress.results.length > 0) {
-        updateScanSelectedCount();
-      }
-      if (scanPollTimer) { clearInterval(scanPollTimer); scanPollTimer = null }
-    }
-
-    function getSelectedScanIPs() {
-      var cbs = document.querySelectorAll('.scan-select-cb:checked');
-      var ips = [];
-      for (var i = 0; i < cbs.length; i++) ips.push(cbs[i].dataset.ip);
-      return ips;
-    }
-
-    function updateScanSelectedCount() {
-      var n = getSelectedScanIPs().length;
-      var label = '(' + n + ')';
-      var el1 = document.getElementById('scanAppendCount');
-      var el2 = document.getElementById('scanOverwriteCount');
-      var el3 = document.getElementById('scanCopyCount');
-      if (el1) el1.textContent = label;
-      if (el2) el2.textContent = label;
-      if (el3) el3.textContent = label;
-    }
-
-    function toggleScanSelectAll(checked) {
-      var cbs = document.querySelectorAll('.scan-select-cb');
-      for (var i = 0; i < cbs.length; i++) cbs[i].checked = checked;
-      updateScanSelectedCount();
-    }
-
-    function renderScanProgress(p) {
-      var pct = p.total > 0 ? Math.round(p.scanned / p.total * 100) : 0;
-      document.getElementById('scanProgressFill').style.width = pct + '%';
-      document.getElementById('scanProgressText').textContent = p.scanned + ' / ' + p.total;
-      document.getElementById('scanFoundText').textContent = p.found || 0;
-
-      var stateKey = 'scanner_' + p.state;
-      document.getElementById('scanStatusLabel').textContent = t(stateKey);
-
-      var pauseBtn = document.getElementById('scanPauseBtn');
-      if (p.state === 'paused') {
-        pauseBtn.textContent = t('scanner_resume');
-        pauseBtn.dataset.paused = '1';
-      } else {
-        pauseBtn.textContent = t('scanner_pause');
-        pauseBtn.dataset.paused = '0';
-      }
-
-      // Render results table
-      var results = p.results || [];
-      scanLastResults = results;
-      var body = document.getElementById('scanResultsBody');
-      body.innerHTML = '';
-      for (var i = 0; i < results.length; i++) {
-        var r = results[i];
-        var tr = document.createElement('tr');
-        tr.style.borderTop = '1px solid var(--border)';
-        tr.innerHTML = '<td style="padding:8px"><input type="checkbox" class="scan-select-cb" data-ip="' + esc(r.ip) + '" checked onchange="updateScanSelectedCount()"></td>' +
-                        '<td style="padding:8px;font-family:monospace;font-size:13px">' + esc(r.ip) + '</td>' +
-                        '<td style="padding:8px;text-align:right;font-size:13px;color:var(--text-dim)">' + (r.latencyMs != null ? Math.round(r.latencyMs) + 'ms' : '-') + '</td>' +
-                        '<td style="padding:4px 8px"><button class="btn btn-flat" style="font-size:12px;padding:4px 8px;min-width:0" onclick="navigator.clipboard.writeText(\'' + esc(r.ip) + '\');showToast(t(\'copied\'))">&#9776;</button></td>';
-        body.appendChild(tr);
-      }
-
-      if (p.state === 'done') {
-        showScanDone(p);
-      } else if (p.state === 'running' || p.state === 'paused') {
-        showScanRunning();
-        if (p.state === 'paused') {
-          document.getElementById('scanPauseBtn').textContent = t('scanner_resume');
-          document.getElementById('scanPauseBtn').dataset.paused = '1';
-        }
-      }
-    }
-
-    function startScanPolling() {
-      if (scanPollTimer) clearInterval(scanPollTimer);
-      scanPollTimer = setInterval(pollScannerOnce, 1500);
-    }
-
-    async function pollScannerOnce() {
-      try {
-        var r = await fetch('/api/scanner/progress');
-        if (!r.ok) return;
-        var p = await r.json();
-        if (p.state === 'running' || p.state === 'paused') {
-          renderScanProgress(p);
-          if (!scanPollTimer) startScanPolling();
-        } else if (p.state === 'done') {
-          renderScanProgress(p);
-        } else {
-          // idle
-          if (p.results && p.results.length > 0) {
-            renderScanProgress(p);
-            showScanDone(p);
-          } else {
-            showScanIdle();
-          }
-        }
-      } catch (e) {}
-    }
-
-    async function applyScanResults(mode) {
-      var ips = getSelectedScanIPs();
-      if (!ips.length) { showToast(t('scanner_no_results')); return }
-      try {
-        var r = await fetch('/api/scanner/apply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ resolvers: ips, mode: mode, profileId: document.getElementById('scanProfile').value })
-        });
-        if (!r.ok) { showToast(await r.text() || 'Failed'); return }
-        showToast(t('scanner_applied'));
-        await loadProfiles();
-      } catch (e) { showToast(e.message) }
-    }
-
-    function copySelectedScanResults() {
-      var ips = getSelectedScanIPs();
-      if (!ips.length) { showToast(t('scanner_no_results')); return }
-      navigator.clipboard.writeText(ips.join('\n')).then(function () { showToast(t('copied')) });
-    }
-
-    function copyAllScanResults() {
-      var ips = scanLastResults.map(function (r) { return r.ip });
-      if (!ips.length) { showToast(t('scanner_no_results')); return }
-      navigator.clipboard.writeText(ips.join('\n')).then(function () { showToast(t('copied')) });
-    }
-
     // ===== EVENTS =====
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && document.activeElement === document.getElementById('sendInput')) { e.preventDefault(); sendMessage() }
       if (e.key === 'Enter' && document.activeElement === document.getElementById('peAddChannelInput')) { e.preventDefault(); addChannelEditor() }
-      if (e.key === 'Escape') { closeSettings(); closeProfiles(); closeProfileEditor(); closeScanner() }
+      if (e.key === 'Escape') { closeSettings(); closeProfiles(); closeProfileEditor() }
     });
     window.addEventListener('resize', function () { if (window.innerWidth > 768) document.getElementById('app').classList.remove('chat-open') });
 

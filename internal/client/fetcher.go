@@ -660,15 +660,9 @@ func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockC
 		allData = append(allData, b...)
 	}
 
-	// Decompress if data has compression header
 	decompressed, err := protocol.DecompressMessages(allData)
 	if err != nil {
-		// Fall back to raw parse for backward compatibility with uncompressed data
-		msgs, rawErr := protocol.ParseMessages(allData)
-		if rawErr == nil {
-			f.clearPartial(cacheKey)
-		}
-		return msgs, rawErr
+		return nil, fmt.Errorf("decompress channel %d: %w", channelNum, err)
 	}
 
 	msgs, parseErr := protocol.ParseMessages(decompressed)

@@ -376,14 +376,13 @@ func (pr *PublicReader) fetchInlineImage(ctx context.Context, rawURL string) (mi
 		return "", "", 0
 	}
 	compressed := pr.compressWebp(b)
-	out := b
-	if len(compressed) > 0 {
-		out = compressed
-		ct = "image/webp"
+	if len(compressed) == 0 {
+		return "", "", 0
 	}
-	_ = os.WriteFile(path, out, 0600)
+	ct = "image/webp"
+	_ = os.WriteFile(path, compressed, 0600)
 	_ = os.Remove(tmpPart)
-	return ct, base64.StdEncoding.EncodeToString(out), len(out)
+	return ct, base64.StdEncoding.EncodeToString(compressed), len(compressed)
 }
 
 func hashKey(s string) string {
