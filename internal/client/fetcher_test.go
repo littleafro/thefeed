@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,5 +214,60 @@ func TestSetScatter(t *testing.T) {
 	f.SetScatter(3)
 	if f.scatter != 3 {
 		t.Fatalf("scatter = %d after SetScatter(3), want 3", f.scatter)
+	}
+}
+
+func TestFetchMetadataLoadsMoreThan16Blocks(t *testing.T) {
+	f := newTestFetcher(t, []string{"1.1.1.1:53"})
+	f.SetScatter(1)
+
+	meta := &protocol.Metadata{
+		TelegramLoggedIn: true,
+		Channels: []protocol.ChannelInfo{
+			{Name: "a", ThumbMIME: "image/webp", ThumbB64: strings.Repeat("A", 4000)},
+			{Name: "b", ThumbMIME: "image/webp", ThumbB64: strings.Repeat("B", 4000)},
+			{Name: "c", ThumbMIME: "image/webp", ThumbB64: strings.Repeat("C", 4000)},
+		},
+	}
+	copy(meta.Marker[:], []byte{1, 2, 3})
+
+	blocks := protocol.SplitIntoBlocks(protocol.SerializeMetadata(meta))
+	if len(blocks) <= 16 {
+		t.Fatalf("test setup invalid: got %d metadata blocks, want >16", len(blocks))
+	}
+
+	f.exchangeFn = func(ctx context.Context, m *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+		ch, blk, err := protocol.DecodeQuery(f.queryKey, m.Question[0].Name, f.domain)
+		if err != nil {
+			return nil, 0, err
+		}
+		if ch != protocol.MetadataChannel {
+			return nil, 0, fmt.Errorf("unexpected channel %d", ch)
+		}
+		if int(blk) >= len(blocks) {
+			return nil, 0, fmt.Errorf("metadata block %d out of range (%d blocks)", blk, len(blocks))
+		}
+		encoded, err := protocol.EncodeResponse(f.responseKey, blocks[int(blk)], 0)
+		if err != nil {
+			return nil, 0, err
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Answer = []dns.RR{&dns.TXT{
+			Hdr: dns.RR_Header{Name: m.Question[0].Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 0},
+			Txt: []string{encoded},
+		}}
+		return resp, time.Millisecond, nil
+	}
+
+	got, err := f.FetchMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("FetchMetadata: unexpected error: %v", err)
+	}
+	if len(got.Channels) != len(meta.Channels) {
+		t.Fatalf("channels len = %d, want %d", len(got.Channels), len(meta.Channels))
+	}
+	if got.Channels[2].ThumbB64 != meta.Channels[2].ThumbB64 {
+		t.Fatalf("channel thumbnail mismatch: got len %d, want len %d", len(got.Channels[2].ThumbB64), len(meta.Channels[2].ThumbB64))
 	}
 }

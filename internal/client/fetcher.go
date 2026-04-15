@@ -530,6 +530,8 @@ func (f *Fetcher) FetchBlock(ctx context.Context, channel, block uint16) ([]byte
 
 // FetchMetadata fetches and parses the metadata block (channel 0).
 func (f *Fetcher) FetchMetadata(ctx context.Context) (*protocol.Metadata, error) {
+	const maxMetadataBlocks = 256
+
 	data, err := f.FetchBlock(ctx, protocol.MetadataChannel, 0)
 	if err != nil {
 		return nil, fmt.Errorf("fetch metadata block 0: %w", err)
@@ -548,7 +550,7 @@ func (f *Fetcher) FetchMetadata(ctx context.Context) (*protocol.Metadata, error)
 	copy(allData, data)
 	lastParseErr := err
 
-	for blk := uint16(1); blk < 16; blk++ {
+	for blk := uint16(1); blk < maxMetadataBlocks; blk++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -563,6 +565,9 @@ func (f *Fetcher) FetchMetadata(ctx context.Context) (*protocol.Metadata, error)
 			}
 		}
 		if fetchErr != nil {
+			if isMetadataBlockOutOfRangeError(fetchErr) {
+				break
+			}
 			return nil, fmt.Errorf("could not parse metadata: %w (failed fetching metadata block %d: %v)", lastParseErr, blk, fetchErr)
 		}
 		allData = append(allData, block...)
@@ -585,6 +590,13 @@ func isTruncatedMetadataError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "metadata too short") || strings.Contains(msg, "truncated ")
+}
+
+func isMetadataBlockOutOfRangeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "metadata block") && strings.Contains(err.Error(), "out of range")
 }
 
 // FetchLatestVersion fetches the latest release version from the dedicated
