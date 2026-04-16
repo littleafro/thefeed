@@ -2652,10 +2652,27 @@
     // ===== UTILITIES =====
     function esc(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s)); return d.innerHTML }
     function isPersian(text) { return text && (text.match(/[\u0600-\u06FF]/g) || []).length > text.length * 0.25 }
+    var MAX_CHANNEL_THUMB_RETRIES = 4;
+    var MAX_INLINE_IMAGE_RETRIES = 6;
     function retryImageLoad(img, key) {
       if (!img || !img.dataset) return;
       var current = parseInt(img.dataset.retryAttempt || '0', 10) || 0;
       var nextAttempt = current + 1;
+      var isChannelThumb = (key || '').indexOf('ch-thumb-') === 0;
+      var maxAttempts = isChannelThumb ? MAX_CHANNEL_THUMB_RETRIES : MAX_INLINE_IMAGE_RETRIES;
+      if (nextAttempt > maxAttempts) {
+        if (!img.dataset.retryExhaustedLogged) {
+          img.dataset.retryExhaustedLogged = '1';
+          var finalSrc = img.getAttribute('src') || '';
+          if (isChannelThumb) {
+            var channelNum = (key || '').replace('ch-thumb-', '');
+            addLogLine('Warning: channel thumbnail fetch stopped after ' + maxAttempts + ' retries (channel ' + channelNum + '): ' + finalSrc);
+          } else {
+            addLogLine('Warning: image fetch stopped after ' + maxAttempts + ' retries: ' + finalSrc);
+          }
+        }
+        return;
+      }
       img.dataset.retryAttempt = '' + nextAttempt;
       var delay = Math.min(10000, 1000 * Math.max(1, nextAttempt));
       if (imageRetryTimers[key]) clearTimeout(imageRetryTimers[key]);
@@ -2663,6 +2680,10 @@
         if (!img || !img.isConnected) return;
         var src = img.getAttribute('src') || '';
         var clean = src.split('#retry=')[0];
+        if (isChannelThumb) {
+          var chNum = (key || '').replace('ch-thumb-', '');
+          addLogLine('Retrying channel thumbnail fetch (' + nextAttempt + '/' + maxAttempts + ') for channel ' + chNum + ': ' + clean);
+        }
         img.setAttribute('src', clean + '#retry=' + Date.now());
       }, delay);
     }

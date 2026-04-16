@@ -1146,6 +1146,7 @@ func (s *Server) refreshChannel(channelNum int) bool {
 		s.broadcast(fmt.Sprintf("event: update\ndata: {\"type\":\"messages\",\"channel\":%d}\n\n", channelNum))
 		return true
 	}
+	s.addLog(fmt.Sprintf("Fetching channel %s (channel=%d, blocks=%d, last_id=%d)", ch.Name, channelNum, blockCount, ch.LastMsgID))
 
 	// Wrap the context with a deadline at the server's next Telegram fetch.
 	// If the server starts fetching during our block download we cancel early,
