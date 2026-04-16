@@ -10,6 +10,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -211,7 +214,30 @@ func (xr *XPublicReader) fetchChannelThumbnail(ctx context.Context, account stri
 	if err != nil || len(data) == 0 || len(data) > 256*1024 {
 		return "", ""
 	}
-	return ct, base64.StdEncoding.EncodeToString(data)
+	compressed := xr.compressWebp(data)
+	if len(compressed) == 0 {
+		return "", ""
+	}
+	return "image/webp", base64.StdEncoding.EncodeToString(compressed)
+}
+
+func (xr *XPublicReader) compressWebp(src []byte) []byte {
+	in := filepath.Join(os.TempDir(), "thefeed-x-thumb-in-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	out := filepath.Join(os.TempDir(), "thefeed-x-thumb-out-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".webp")
+	if err := os.WriteFile(in, src, 0600); err != nil {
+		return nil
+	}
+	defer os.Remove(in)
+	cmd := exec.Command("cwebp", "-q", "10", in, "-o", out)
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+	defer os.Remove(out)
+	b, err := os.ReadFile(out)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func (xr *XPublicReader) fetchAccount(ctx context.Context, username string) ([]protocol.Message, error) {

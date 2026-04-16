@@ -2160,10 +2160,17 @@
           var isX = ct2 === 2;
           var thumbMime = e.ch.ThumbMIME || e.ch.thumbMIME || '';
           var thumbB64 = e.ch.ThumbB64 || e.ch.thumbB64 || '';
-          var thumbURL = (thumbMime.indexOf('image/') === 0 && thumbB64) ? ('data:' + thumbMime + ';base64,' + thumbB64) : '';
-          var thumbHash = (e.ch.ContentHash || e.ch.contentHash || 0) ^ ((thumbB64 && thumbB64.length) || 0);
-          if (thumbHash !== channelThumbVersions[num2] || channelThumbURLs[num2] !== thumbURL) {
-            channelThumbVersions[num2] = thumbHash;
+          var thumbVersion = e.ch.ThumbVersion || e.ch.thumbVersion || '';
+          // Backward compatibility with older servers that still embed ThumbB64 in /api/channels.
+          if (!thumbVersion && thumbB64) thumbVersion = String((e.ch.ContentHash || e.ch.contentHash || 0) ^ thumbB64.length);
+          var thumbURL = '';
+          if (thumbMime.indexOf('image/') === 0 && thumbVersion) {
+            thumbURL = '/api/channel-thumbnail?channel=' + num2 + '&v=' + encodeURIComponent(thumbVersion);
+          } else if (thumbMime.indexOf('image/') === 0 && thumbB64) {
+            thumbURL = 'data:' + thumbMime + ';base64,' + thumbB64;
+          }
+          if (thumbVersion !== channelThumbVersions[num2] || channelThumbURLs[num2] !== thumbURL) {
+            channelThumbVersions[num2] = thumbVersion;
             channelThumbURLs[num2] = thumbURL;
           }
           var active = num2 === selectedChannel ? ' active' : '';
