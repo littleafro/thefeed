@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io/fs"
 	"log"
 	mrand "math/rand/v2"
@@ -180,6 +182,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/channels", s.handleChannels)
+	mux.HandleFunc("/api/channel-thumbnail", s.handleChannelThumbnail)
 	mux.HandleFunc("/api/messages/", s.handleMessages)
 	mux.HandleFunc("/api/refresh", s.handleRefresh)
 	mux.HandleFunc("/api/rescan", s.handleRescan)
@@ -330,7 +333,80 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	channels := make([]protocol.ChannelInfo, len(s.channels))
 	copy(channels, s.channels)
 	s.mu.RUnlock()
-	writeJSON(w, channels)
+	type channelResponse struct {
+		Name         string
+		Blocks       uint16
+		LastMsgID    uint32
+		ContentHash  uint32
+		ChatType     protocol.ChatType
+		CanSend      bool
+		ThumbMIME    string
+		ThumbB64     string
+		ThumbVersion string
+	}
+	resp := make([]channelResponse, 0, len(channels))
+	for _, ch := range channels {
+		resp = append(resp, channelResponse{
+			Name:         ch.Name,
+			Blocks:       ch.Blocks,
+			LastMsgID:    ch.LastMsgID,
+			ContentHash:  ch.ContentHash,
+			ChatType:     ch.ChatType,
+			CanSend:      ch.CanSend,
+			ThumbMIME:    ch.ThumbMIME,
+			ThumbVersion: thumbVersion(ch.ThumbMIME, ch.ThumbB64),
+		})
+	}
+	writeJSON(w, resp)
+}
+
+func (s *Server) handleChannelThumbnail(w http.ResponseWriter, r *http.Request) {
+	chParam := r.URL.Query().Get("channel")
+	chNum, err := strconv.Atoi(chParam)
+	if err != nil || chNum < 1 {
+		http.Error(w, "invalid channel", 400)
+		return
+	}
+
+	s.mu.RLock()
+	if chNum > len(s.channels) {
+		s.mu.RUnlock()
+		http.Error(w, "channel not found", 404)
+		return
+	}
+	ch := s.channels[chNum-1]
+	s.mu.RUnlock()
+
+	if !strings.HasPrefix(ch.ThumbMIME, "image/") || strings.TrimSpace(ch.ThumbB64) == "" {
+		http.Error(w, "thumbnail not found", 404)
+		return
+	}
+	etag := `"` + thumbVersion(ch.ThumbMIME, ch.ThumbB64) + `"`
+	if strings.Contains(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(ch.ThumbB64)
+	if err != nil || len(raw) == 0 {
+		http.Error(w, "invalid thumbnail data", 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", ch.ThumbMIME)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("ETag", etag)
+	_, _ = w.Write(raw)
+}
+
+func thumbVersion(mimeType, base64Data string) string {
+	if strings.TrimSpace(base64Data) == "" {
+		return ""
+	}
+	checksum := crc32.NewIEEE()
+	_, _ = checksum.Write([]byte(strings.TrimSpace(mimeType)))
+	_, _ = checksum.Write([]byte{'\n'})
+	_, _ = checksum.Write([]byte(strings.TrimSpace(base64Data)))
+	return fmt.Sprintf("%08x", checksum.Sum32())
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
